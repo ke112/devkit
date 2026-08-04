@@ -181,83 +181,82 @@ struct SimulatorManagementView: View {
                             ? "正在彻底删除..."
                             : "正在删除模拟器..."
 
-                        Section(header: 
-                            HStack {
-                                Text(group.displayName)
-                                    .font(.headline)
+                        HStack {
+                            Text(group.displayName)
+                                .font(.headline)
 
-                                if isDeletingRuntime {
-                                    ProgressView()
-                                        .controlSize(.small)
+                            if isDeletingRuntime {
+                                ProgressView()
+                                    .controlSize(.small)
 
-                                    Text(deleteProgressText)
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-
-                                Spacer()
-                                Button(action: {
-                                    simulatorManager.showSimulatorsInFinder(for: group.runtime)
-                                }) {
-                                    Image(systemName: "folder")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(group.devices.isEmpty || isDeletingRuntime)
-                                .help(
-                                    isDeletingRuntime
-                                        ? deleteProgressText
-                                        : group.devices.isEmpty
-                                        ? "当前版本还没有模拟器目录"
-                                        : "Show simulators in Finder")
-
-                                // 创建模拟器按钮
-                                Button(action: {
-                                    runtimeToCreate = group
-                                    showingCreateOptions = true
-                                }) {
-                                    Image(systemName: "plus.circle")
-                                        .font(.caption)
-                                        .foregroundColor(.green.opacity(0.8))
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(isDeletingRuntime)
-                                .help(isDeletingRuntime ? deleteProgressText : "选择要创建的模拟器范围")
-                                
-                                // 删除按钮
-                                Button(action: {
-                                    runtimeToDelete = group
-                                    showingDeleteConfirm = true
-                                }) {
-                                    Image(systemName: "trash")
-                                        .font(.caption)
-                                        .foregroundColor(.red.opacity(0.8))
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(isDeletingRuntime)
-                                .help(
-                                    isDeletingRuntime
-                                        ? deleteProgressText
-                                        : group.devices.isEmpty
-                                        ? "彻底删除该版本 Runtime 镜像"
-                                        : "删除该版本的模拟器或 Runtime")
+                                Text(deleteProgressText)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
                             }
-                        ) {
-                            if group.devices.isEmpty {
-                                EmptyRuntimeGroupView(runtimeName: group.displayName)
-                            } else {
-                                ForEach(group.devices) { device in
-                                    DeviceRow(
-                                        device: device,
-                                        simulatorManager: simulatorManager,
-                                        showToast: { message in
-                                            toastMessage = message
-                                            withAnimation {
-                                                showingToast = true
-                                            }
-                                        })
-                                }
+
+                            Spacer()
+                            Button(action: {
+                                simulatorManager.showSimulatorsInFinder(for: group.runtime)
+                            }) {
+                                Image(systemName: "folder")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(group.devices.isEmpty || isDeletingRuntime)
+                            .help(
+                                isDeletingRuntime
+                                    ? deleteProgressText
+                                    : group.devices.isEmpty
+                                    ? "当前版本还没有模拟器目录"
+                                    : "Show simulators in Finder")
+
+                            // 创建模拟器按钮
+                            Button(action: {
+                                runtimeToCreate = group
+                                showingCreateOptions = true
+                            }) {
+                                Image(systemName: "plus.circle")
+                                    .font(.caption)
+                                    .foregroundColor(.green.opacity(0.8))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isDeletingRuntime)
+                            .help(isDeletingRuntime ? deleteProgressText : "选择要创建的模拟器范围")
+
+                            // 删除按钮
+                            Button(action: {
+                                runtimeToDelete = group
+                                showingDeleteConfirm = true
+                            }) {
+                                Image(systemName: "trash")
+                                    .font(.caption)
+                                    .foregroundColor(.red.opacity(0.8))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isDeletingRuntime)
+                            .help(
+                                isDeletingRuntime
+                                    ? deleteProgressText
+                                    : group.devices.isEmpty
+                                    ? "彻底删除该版本 Runtime 镜像"
+                                    : "删除该版本的模拟器或 Runtime")
+                        }
+                        .listRowInsets(EdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8))
+
+                        if group.devices.isEmpty {
+                            EmptyRuntimeGroupView(runtimeName: group.displayName)
+                        } else {
+                            ForEach(group.devices) { device in
+                                DeviceRow(
+                                    device: device,
+                                    simulatorManager: simulatorManager,
+                                    showToast: { message in
+                                        toastMessage = message
+                                        withAnimation {
+                                            showingToast = true
+                                        }
+                                    })
                             }
                         }
                     }
