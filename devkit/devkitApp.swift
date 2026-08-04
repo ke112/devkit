@@ -1,17 +1,12 @@
-//
-//  devkitApp.swift
-//  devkit
-//
-//  Created by kl on 2026/8/4.
-//
-
 import SwiftUI
 
 @main
-struct devkitApp: App {
+struct DevKitApp: App {
     var body: some Scene {
-        WindowGroup {
+        Window("DevKit", id: "main") {
             ContentView()
         }
+        .defaultSize(width: 960, height: 680)
+        .windowResizability(.contentMinSize)
     }
 }

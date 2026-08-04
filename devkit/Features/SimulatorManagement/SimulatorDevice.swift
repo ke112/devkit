@@ -1,0 +1,85 @@
+import Foundation
+
+/// 设备Model
+struct SimulatorDevice: Identifiable {
+  let id: String
+  let udid: String
+  let name: String
+  let state: String
+  let runtime: String
+  let deviceType: DeviceType
+  let screenSize: Double
+  let resolution: String  // 物理分辨率
+  let logicalResolution: String  // 屏幕点(逻辑分辨率)
+  /// 是否为占位设备（当 JSON 格式失败回退到文本格式时，无法获取真实 UDID 的设备）
+  let isPlaceholder: Bool
+
+  /// 设备类型: iPhone或iPad
+  enum DeviceType {
+    case iPhone
+    case iPad
+    case other
+  }
+
+  init(
+    udid: String,
+    name: String,
+    state: String,
+    runtime: String,
+    deviceTypeIdentifier: String? = nil,
+    isPlaceholder: Bool = false
+  ) {
+    id = udid
+    self.udid = udid
+    self.name = name
+    self.state = state
+    self.runtime = runtime
+    self.isPlaceholder = isPlaceholder
+
+    // 使用配置管理器获取设备信息（优先通过 UDID 解析设备类型，其次按名称）
+    if let spec =
+      (deviceTypeIdentifier.flatMap { DeviceSpecsManager.shared.getDeviceSpec(forIdentifier: $0) }
+        ?? DeviceSpecsManager.shared.getDeviceSpec(forUDID: udid)
+        ?? DeviceSpecsManager.shared.getDeviceSpec(for: name))
+    {
+      self.screenSize = spec.screenSize
+      self.resolution = spec.resolution
+      self.logicalResolution = spec.logicalResolution
+
+      switch spec.deviceType {
+      case "iPhone":
+        self.deviceType = .iPhone
+      case "iPad":
+        self.deviceType = .iPad
+      default:
+        self.deviceType = .other
+      }
+    } else {
+      // 回退到基本检测
+      if name.contains("iPhone") {
+        self.deviceType = .iPhone
+      } else if name.contains("iPad") {
+        self.deviceType = .iPad
+      } else {
+        self.deviceType = .other
+      }
+
+      self.screenSize = 0
+      self.resolution = ""
+      self.logicalResolution = ""
+    }
+  }
+
+  init(copying device: SimulatorDevice, state: String) {
+    id = device.id
+    udid = device.udid
+    name = device.name
+    self.state = state
+    runtime = device.runtime
+    deviceType = device.deviceType
+    screenSize = device.screenSize
+    resolution = device.resolution
+    logicalResolution = device.logicalResolution
+    isPlaceholder = device.isPlaceholder
+  }
+}
