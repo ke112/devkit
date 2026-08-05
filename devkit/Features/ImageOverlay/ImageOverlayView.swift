@@ -294,6 +294,11 @@ private struct ImageImportArea: View {
     }
 }
 
+private enum PreviewWindowMetrics {
+    static let minimumSize = CGSize(width: 720, height: 560)
+    static let initialSize = CGSize(width: 900, height: 700)
+}
+
 private struct CompositePreview: View {
     private static let minimumImageScale: CGFloat = 1
     private static let maximumImageScale: CGFloat = 5
@@ -431,7 +436,14 @@ private struct CompositePreview: View {
             }
             .padding(20)
         }
-        .frame(minWidth: 720, minHeight: 560)
+        .frame(
+            minWidth: PreviewWindowMetrics.minimumSize.width,
+            idealWidth: PreviewWindowMetrics.initialSize.width,
+            maxWidth: .infinity,
+            minHeight: PreviewWindowMetrics.minimumSize.height,
+            idealHeight: PreviewWindowMetrics.initialSize.height,
+            maxHeight: .infinity
+        )
         .fileExporter(
             isPresented: $isExporterPresented,
             document: exportDocument,
@@ -707,7 +719,7 @@ private struct ParentWindowClickDismissal: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSView {
-        let view = NSView()
+        let view = ResizableSheetHostView()
         context.coordinator.hostView = view
         context.coordinator.startMonitoring()
         return view
@@ -765,6 +777,20 @@ private struct ParentWindowClickDismissal: NSViewRepresentable {
                 self.eventMonitor = nil
             }
         }
+    }
+}
+
+private final class ResizableSheetHostView: NSView {
+    private var hasConfiguredWindow = false
+
+    override func layout() {
+        super.layout()
+        guard !hasConfiguredWindow, let window else { return }
+
+        hasConfiguredWindow = true
+        window.setContentSize(PreviewWindowMetrics.initialSize)
+        window.styleMask.insert(.resizable)
+        window.contentMinSize = PreviewWindowMetrics.minimumSize
     }
 }
 
