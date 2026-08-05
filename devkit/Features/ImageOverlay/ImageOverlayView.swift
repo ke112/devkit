@@ -325,17 +325,25 @@ private struct CompositePreview: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("叠加预览")
-                        .font(.title2.bold())
-                    Text("\(bottomImage.name) + \(topImage.name)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+            HStack(spacing: 12) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("叠加预览")
+                            .font(.title2.bold())
+                        Text("\(bottomImage.name) + \(topImage.name)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
 
-                Spacer()
+                    Spacer(minLength: 16)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .overlay {
+                    WindowGroupDragArea()
+                        .accessibilityHidden(true)
+                }
 
                 HStack(spacing: 6) {
                     Button {
@@ -791,6 +799,46 @@ private final class ResizableSheetHostView: NSView {
         window.setContentSize(PreviewWindowMetrics.initialSize)
         window.styleMask.insert(.resizable)
         window.contentMinSize = PreviewWindowMetrics.minimumSize
+    }
+}
+
+private struct WindowGroupDragArea: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        WindowGroupDragView()
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+@MainActor
+private final class WindowGroupDragView: NSView {
+    override var acceptsFirstResponder: Bool { false }
+
+    override func mouseDown(with event: NSEvent) {
+        guard event.clickCount == 1, let window else { return }
+
+        var rootWindow = window
+        while let parentWindow = rootWindow.sheetParent {
+            rootWindow = parentWindow
+        }
+
+        // performDrag expects the initiating event in the window being moved.
+        let location = rootWindow.convertPoint(fromScreen: NSEvent.mouseLocation)
+        guard let dragEvent = NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: location,
+            modifierFlags: event.modifierFlags,
+            timestamp: event.timestamp,
+            windowNumber: rootWindow.windowNumber,
+            context: nil,
+            eventNumber: event.eventNumber,
+            clickCount: event.clickCount,
+            pressure: event.pressure
+        ) else {
+            return
+        }
+
+        rootWindow.performDrag(with: dragEvent)
     }
 }
 
