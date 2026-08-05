@@ -339,11 +339,6 @@ private struct CompositePreview: View {
                     Spacer(minLength: 16)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .overlay {
-                    WindowGroupDragArea()
-                        .accessibilityHidden(true)
-                }
 
                 HStack(spacing: 6) {
                     Button {
@@ -380,6 +375,10 @@ private struct CompositePreview: View {
                 .help("关闭")
             }
             .padding(20)
+            .background {
+                WindowGroupDragArea()
+                    .accessibilityHidden(true)
+            }
 
             Divider()
 
