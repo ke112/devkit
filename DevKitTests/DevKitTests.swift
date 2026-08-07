@@ -32,6 +32,160 @@ struct DevKitTests {
         #expect(output.pixelsHigh == 20)
     }
 
+    @Test func compositeImageUsesLargerTopImagePixelSizeWithoutScaling() throws {
+        let bottomImage = makeImage(width: 40, height: 20, color: .red)
+        let topImage = makeImage(width: 80, height: 60, color: .blue)
+
+        let data = try CompositeImageRenderer.pngData(
+            bottomImage: bottomImage,
+            topImage: topImage,
+            topOpacity: 0.5
+        )
+        let output = try #require(NSBitmapImageRep(data: data))
+
+        #expect(output.pixelsWide == 80)
+        #expect(output.pixelsHigh == 60)
+    }
+
+    @Test func compositeLayoutKeepsNativeTopSizeAcrossOddAndEvenWidths() {
+        let layout = CompositeImageRenderer.layout(
+            bottomSize: ImagePixelSize(width: 357, height: 774),
+            topSize: ImagePixelSize(width: 1_206, height: 2_622),
+            transform: TopImageTransform()
+        )
+
+        #expect(layout.pixelSize == ImagePixelSize(width: 1_206, height: 2_622))
+    }
+
+    @Test func compositeLayoutUsesScreenPointsAcrossDifferentBackingScales() {
+        let layout = CompositeImageRenderer.layout(
+            bottomSize: ImagePixelSize(width: 357, height: 774),
+            bottomBackingScale: 1,
+            topSize: ImagePixelSize(width: 1_206, height: 2_622),
+            topBackingScale: 3,
+            transform: TopImageTransform()
+        )
+
+        #expect(layout.bottomRect.size == CGSize(width: 357, height: 774))
+        #expect(layout.topRect.size == CGSize(width: 402, height: 874))
+        #expect(layout.logicalBounds.size == CGSize(width: 402, height: 874))
+        #expect(layout.pixelSize == ImagePixelSize(width: 1_206, height: 2_622))
+    }
+
+    @Test func imageBackingScaleDetectsCommonScreenshotConventions() {
+        #expect(
+            CompositeImageRenderer.suggestedBackingScale(
+                for: ImagePixelSize(width: 1_206, height: 2_622),
+                named: "Simulator Screenshot - iPhone 17 Pro.png"
+            ) == .three
+        )
+        #expect(
+            CompositeImageRenderer.suggestedBackingScale(
+                for: ImagePixelSize(width: 357, height: 774),
+                named: "screenshot.png"
+            ) == .one
+        )
+        #expect(
+            CompositeImageRenderer.suggestedBackingScale(
+                for: ImagePixelSize(width: 1_440, height: 3_120),
+                named: "screen-xxxhdpi.png"
+            ) == .four
+        )
+    }
+
+    @Test func imageBackingScalePrefersExplicitNameOverImageMetadata() {
+        let image = makeImage(width: 120, height: 240, color: .blue)
+        image.size = CGSize(width: 60, height: 120)
+
+        #expect(
+            CompositeImageRenderer.suggestedBackingScale(
+                for: image,
+                named: "icon@3x.png"
+            ) == .three
+        )
+    }
+
+    @Test func compositeImagePreservesLogicalPointSizeInExportMetadata() throws {
+        let bottomImage = makeImage(width: 40, height: 80, color: .red)
+        let topImage = makeImage(width: 120, height: 240, color: .blue)
+
+        let data = try CompositeImageRenderer.pngData(
+            bottomImage: bottomImage,
+            topImage: topImage,
+            topOpacity: 0.5,
+            bottomBackingScale: 1,
+            topBackingScale: 3
+        )
+        let output = try #require(NSBitmapImageRep(data: data))
+
+        #expect(output.pixelsWide == 120)
+        #expect(output.pixelsHigh == 240)
+        #expect(output.size == CGSize(width: 40, height: 80))
+    }
+
+    @Test func compositeLayoutExpandsToIncludeMovedTopImage() {
+        let layout = CompositeImageRenderer.layout(
+            bottomSize: ImagePixelSize(width: 20, height: 20),
+            topSize: ImagePixelSize(width: 10, height: 10),
+            transform: TopImageTransform(
+                scale: 1,
+                offset: CGSize(width: 20, height: 20)
+            )
+        )
+
+        #expect(layout.logicalBounds == CGRect(x: 0, y: 0, width: 35, height: 35))
+        #expect(layout.pixelSize == ImagePixelSize(width: 35, height: 35))
+    }
+
+    @Test func compositeLayoutKeepsBottomImageAsMinimumBounds() {
+        let layout = CompositeImageRenderer.layout(
+            bottomSize: ImagePixelSize(width: 100, height: 80),
+            topSize: ImagePixelSize(width: 20, height: 20),
+            transform: TopImageTransform(scale: 0.5)
+        )
+
+        #expect(layout.logicalBounds == CGRect(x: 0, y: 0, width: 100, height: 80))
+    }
+
+    @Test func compositeImageLeavesUncoveredUnionAreaTransparent() throws {
+        let bottomImage = makeImage(width: 20, height: 20, color: .red)
+        let topImage = makeImage(width: 10, height: 10, color: .blue)
+
+        let data = try CompositeImageRenderer.pngData(
+            bottomImage: bottomImage,
+            topImage: topImage,
+            topOpacity: 1,
+            transform: TopImageTransform(
+                scale: 1,
+                offset: CGSize(width: 20, height: 20)
+            )
+        )
+        let output = try #require(NSBitmapImageRep(data: data))
+        let uncoveredColor = try #require(output.colorAt(x: 30, y: 10))
+
+        #expect(output.pixelsWide == 35)
+        #expect(output.pixelsHigh == 35)
+        #expect(uncoveredColor.alphaComponent == 0)
+    }
+
+    @Test func compositeOutputLimitsRejectOversizedImages() {
+        #expect(
+            CompositeImageOutputLimits.validationMessage(
+                for: ImagePixelSize(width: 8_000, height: 8_000)
+            ) == nil
+        )
+        #expect(
+            CompositeImageOutputLimits.validationMessage(
+                for: ImagePixelSize(width: 8_001, height: 8_000)
+            ) != nil
+        )
+        #expect(
+            CompositeImageOutputLimits.validationMessage(
+                for: ImagePixelSize(width: 16_385, height: 1)
+            ) != nil
+        )
+    }
+
     @Test func compositeImageAppliesTopImageOpacity() throws {
         let bottomImage = makeImage(width: 20, height: 20, color: .red)
         let topImage = makeImage(width: 20, height: 20, color: .blue)

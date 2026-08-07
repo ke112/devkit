@@ -82,9 +82,7 @@ struct ImageOverlayView: View {
                     topImage: topImage
                 )
                 .background {
-                    ParentWindowClickDismissal {
-                        isPreviewPresented = false
-                    }
+                    PreviewWindowConfigurator()
                 }
             }
         }
@@ -299,23 +297,42 @@ private enum PreviewWindowMetrics {
     static let initialSize = CGSize(width: 900, height: 700)
 }
 
+private enum PreviewInteractionMode: String, CaseIterable {
+    case editTop
+    case inspectCanvas
+}
+
 private struct CompositePreview: View {
-    private static let minimumImageScale: CGFloat = 1
-    private static let maximumImageScale: CGFloat = 5
-    private static let imageScaleStep: CGFloat = 0.5
+    private static let minimumTopScale: CGFloat = 0.1
+    private static let maximumTopScale: CGFloat = 5
+    private static let topScaleStep: CGFloat = 0.1
+    private static let minimumViewZoom: CGFloat = 1
+    private static let maximumViewZoom: CGFloat = 5
+    private static let viewZoomStep: CGFloat = 0.5
 
     let bottomImage: ImportedImage
     let topImage: ImportedImage
 
+    private let bottomPixelSize: ImagePixelSize
+    private let topPixelSize: ImagePixelSize
+
     @Environment(\.dismiss) private var dismiss
+    @FocusState private var isCanvasFocused: Bool
+    @State private var interactionMode = PreviewInteractionMode.editTop
     @State private var topImageOpacity = 50.0
-    @State private var imageScale: CGFloat = 1
-    @State private var imageOffset = CGSize.zero
+    @State private var topTransform = TopImageTransform()
+    @State private var bottomBackingScale: ImageBackingScale
+    @State private var topBackingScale: ImageBackingScale
     @State private var previewSize = CGSize.zero
-    @State private var magnificationStartScale: CGFloat = 1
-    @State private var magnificationStartOffset = CGSize.zero
+    @State private var fittedViewScale: CGFloat = 1
+    @State private var viewZoom: CGFloat = 1
+    @State private var viewOffset = CGSize.zero
+    @State private var magnificationStartTopTransform = TopImageTransform()
+    @State private var magnificationStartViewZoom: CGFloat = 1
+    @State private var magnificationStartViewOffset = CGSize.zero
     @State private var isMagnifying = false
-    @State private var dragStartOffset = CGSize.zero
+    @State private var dragStartTopOffset = CGSize.zero
+    @State private var dragStartViewOffset = CGSize.zero
     @State private var isDragging = false
     @State private var exportDocument: PNGFileDocument?
     @State private var exportFilename = ""
@@ -323,56 +340,96 @@ private struct CompositePreview: View {
     @State private var exportAlertTitle = ""
     @State private var exportAlertMessage: String?
 
+    init(bottomImage: ImportedImage, topImage: ImportedImage) {
+        self.bottomImage = bottomImage
+        self.topImage = topImage
+        bottomPixelSize = (try? CompositeImageRenderer.pixelSize(for: bottomImage.image))
+            ?? ImagePixelSize(
+                width: max(1, Int(bottomImage.image.size.width)),
+                height: max(1, Int(bottomImage.image.size.height))
+            )
+        topPixelSize = (try? CompositeImageRenderer.pixelSize(for: topImage.image))
+            ?? ImagePixelSize(
+                width: max(1, Int(topImage.image.size.width)),
+                height: max(1, Int(topImage.image.size.height))
+            )
+        _bottomBackingScale = State(
+            initialValue: CompositeImageRenderer.suggestedBackingScale(
+                for: bottomImage.image,
+                named: bottomImage.name
+            )
+        )
+        _topBackingScale = State(
+            initialValue: CompositeImageRenderer.suggestedBackingScale(
+                for: topImage.image,
+                named: topImage.name
+            )
+        )
+    }
+
+    private var compositeLayout: CompositeImageLayout {
+        CompositeImageRenderer.layout(
+            bottomSize: bottomPixelSize,
+            bottomBackingScale: bottomBackingScale.value,
+            topSize: topPixelSize,
+            topBackingScale: topBackingScale.value,
+            transform: topTransform
+        )
+    }
+
+    private var displayScale: CGFloat {
+        fittedViewScale * viewZoom
+    }
+
+    private var outputValidationMessage: String? {
+        CompositeImageOutputLimits.validationMessage(for: compositeLayout.pixelSize)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("叠加预览")
-                            .font(.title2.bold())
-                        Text("\(bottomImage.name) + \(topImage.name)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-
-                    Spacer(minLength: 16)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("叠加预览")
+                        .font(.title2.bold())
+                    Text("\(bottomImage.name) + \(topImage.name)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                HStack(spacing: 6) {
-                    Button {
-                        changeImageScale(by: -Self.imageScaleStep)
-                    } label: {
-                        Image(systemName: "minus.magnifyingglass")
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(imageScale <= Self.minimumImageScale)
-                    .help("缩小")
-
-                    Text(imageScale, format: .number.precision(.fractionLength(1)))
-                        .monospacedDigit()
-                        .frame(width: 28, alignment: .trailing)
-                    Text("x")
-                        .foregroundStyle(.secondary)
-
-                    Button {
-                        changeImageScale(by: Self.imageScaleStep)
-                    } label: {
-                        Image(systemName: "plus.magnifyingglass")
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(imageScale >= Self.maximumImageScale)
-                    .help("放大")
+                Picker("交互模式", selection: $interactionMode) {
+                    Text("编辑上层").tag(PreviewInteractionMode.editTop)
+                    Text("查看画布").tag(PreviewInteractionMode.inspectCanvas)
                 }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 190)
+
+                backingScaleMenu
+
+                transformControls
 
                 Button {
                     dismiss()
                 } label: {
                     Image(systemName: "xmark")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .frame(width: 36, height: 36)
+                        .background {
+                            Circle()
+                                .fill(Color.primary.opacity(0.08))
+                        }
+                        .overlay {
+                            Circle()
+                                .stroke(Color.primary.opacity(0.14), lineWidth: 1)
+                        }
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.plain)
+                .contentShape(Circle())
                 .help("关闭")
+                .accessibilityLabel("关闭")
             }
             .padding(20)
             .background {
@@ -383,63 +440,28 @@ private struct CompositePreview: View {
             Divider()
 
             GeometryReader { geometry in
-                let size = geometry.size
-
-                ZStack {
-                    Color(nsColor: .windowBackgroundColor)
-
-                    ZStack {
-                        Image(nsImage: bottomImage.image)
-                            .resizable()
-                            .scaledToFit()
-
-                        Image(nsImage: topImage.image)
-                            .resizable()
-                            .scaledToFit()
-                            .opacity(topImageOpacity / 100)
-                    }
-                    .frame(width: size.width, height: size.height)
-                    .scaleEffect(imageScale)
-                    .offset(imageOffset)
-                }
-                .contentShape(Rectangle())
-                .clipped()
-                .simultaneousGesture(doubleClickGesture(in: size))
-                .simultaneousGesture(magnificationGesture(in: size))
-                .simultaneousGesture(dragGesture(in: size))
-                .onAppear {
-                    updatePreviewSize(size)
-                }
-                .onChange(of: size) { _, newSize in
-                    updatePreviewSize(newSize)
-                }
+                previewCanvas(in: geometry.size)
             }
             .padding(24)
 
             Divider()
 
-            HStack(spacing: 14) {
-                Image(systemName: "circle.lefthalf.filled")
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-
-                Text("上层透明度")
-
-                Slider(value: $topImageOpacity, in: 0...100, step: 1)
-                    .frame(minWidth: 160, maxWidth: 360)
-
-                Text("\(Int(topImageOpacity))%")
-                    .monospacedDigit()
-                    .frame(width: 42, alignment: .trailing)
-
-                Spacer(minLength: 20)
-
-                Button {
-                    prepareExport()
-                } label: {
-                    Label("导出图片", systemImage: "square.and.arrow.down")
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 14) {
+                    opacityControls
+                    Spacer(minLength: 16)
+                    exportControls
                 }
-                .buttonStyle(.borderedProminent)
+
+                VStack(spacing: 12) {
+                    HStack(spacing: 14) {
+                        opacityControls
+                    }
+                    HStack(spacing: 14) {
+                        Spacer()
+                        exportControls
+                    }
+                }
             }
             .padding(20)
         }
@@ -451,6 +473,12 @@ private struct CompositePreview: View {
             idealHeight: PreviewWindowMetrics.initialSize.height,
             maxHeight: .infinity
         )
+        .onChange(of: bottomBackingScale) { _, _ in
+            fitOutput(in: previewSize)
+        }
+        .onChange(of: topBackingScale) { _, _ in
+            fitOutput(in: previewSize)
+        }
         .fileExporter(
             isPresented: $isExporterPresented,
             document: exportDocument,
@@ -472,13 +500,230 @@ private struct CompositePreview: View {
         }
     }
 
+    private var backingScaleMenu: some View {
+        Menu {
+            Section("底图") {
+                backingScaleButtons(selection: $bottomBackingScale)
+            }
+            Section("上层图片") {
+                backingScaleButtons(selection: $topBackingScale)
+            }
+        } label: {
+            Image(systemName: "ruler")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("屏幕倍率：底图 \(bottomBackingScale.label)，上层 \(topBackingScale.label)")
+        .accessibilityLabel("屏幕倍率")
+    }
+
+    @ViewBuilder
+    private func backingScaleButtons(selection: Binding<ImageBackingScale>) -> some View {
+        ForEach(ImageBackingScale.allCases) { scale in
+            Button {
+                selection.wrappedValue = scale
+            } label: {
+                if selection.wrappedValue == scale {
+                    Label(scale.label, systemImage: "checkmark")
+                } else {
+                    Text(scale.label)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var transformControls: some View {
+        HStack(spacing: 6) {
+            Button {
+                if interactionMode == .editTop {
+                    changeTopScale(by: -Self.topScaleStep)
+                } else {
+                    changeViewZoom(by: -Self.viewZoomStep)
+                }
+            } label: {
+                Image(systemName: "minus.magnifyingglass")
+            }
+            .buttonStyle(.borderless)
+            .disabled(
+                interactionMode == .editTop
+                    ? topTransform.scale <= Self.minimumTopScale
+                    : viewZoom <= Self.minimumViewZoom
+            )
+            .help("缩小")
+
+            if interactionMode == .editTop {
+                Text("\(Int((topTransform.scale * 100).rounded()))%")
+                    .monospacedDigit()
+                    .frame(width: 44, alignment: .trailing)
+            } else {
+                Text(viewZoom, format: .number.precision(.fractionLength(1)))
+                    .monospacedDigit()
+                    .frame(width: 28, alignment: .trailing)
+                Text("x")
+                    .foregroundStyle(.secondary)
+            }
+
+            Button {
+                if interactionMode == .editTop {
+                    changeTopScale(by: Self.topScaleStep)
+                } else {
+                    changeViewZoom(by: Self.viewZoomStep)
+                }
+            } label: {
+                Image(systemName: "plus.magnifyingglass")
+            }
+            .buttonStyle(.borderless)
+            .disabled(
+                interactionMode == .editTop
+                    ? topTransform.scale >= Self.maximumTopScale
+                    : viewZoom >= Self.maximumViewZoom
+            )
+            .help("放大")
+
+            Button {
+                if interactionMode == .editTop {
+                    resetTopTransform()
+                } else {
+                    fitOutput(in: previewSize)
+                }
+            } label: {
+                Image(systemName: interactionMode == .editTop
+                    ? "arrow.counterclockwise"
+                    : "arrow.up.left.and.arrow.down.right")
+            }
+            .buttonStyle(.borderless)
+            .help(interactionMode == .editTop ? "重置上层图片" : "适应窗口")
+        }
+    }
+
+    @ViewBuilder
+    private var opacityControls: some View {
+        Image(systemName: "circle.lefthalf.filled")
+            .foregroundStyle(.secondary)
+            .accessibilityHidden(true)
+
+        Text("上层透明度")
+
+        Slider(value: $topImageOpacity, in: 0...100, step: 1)
+            .frame(minWidth: 140, maxWidth: 320)
+
+        Text("\(Int(topImageOpacity))%")
+            .monospacedDigit()
+            .frame(width: 42, alignment: .trailing)
+    }
+
+    @ViewBuilder
+    private var exportControls: some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            Text(
+                "画布 \(pointDimension(compositeLayout.logicalBounds.width)) × "
+                    + "\(pointDimension(compositeLayout.logicalBounds.height)) pt"
+            )
+                .font(.caption)
+                .monospacedDigit()
+            Text("导出 \(compositeLayout.pixelSize.width) × \(compositeLayout.pixelSize.height) px")
+                .font(.caption)
+                .monospacedDigit()
+            if let outputValidationMessage {
+                Text(outputValidationMessage)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+            }
+        }
+
+        Button {
+            prepareExport()
+        } label: {
+            Label("导出图片", systemImage: "square.and.arrow.down")
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(outputValidationMessage != nil)
+    }
+
+    private func previewCanvas(in size: CGSize) -> some View {
+        let bottomCenter = CGPoint(
+            x: size.width / 2 + viewOffset.width,
+            y: size.height / 2 + viewOffset.height
+        )
+        let outputCenterOffset = compositeLayout.outputCenterFromBottomCenter
+        let outputCenter = CGPoint(
+            x: bottomCenter.x + outputCenterOffset.width * displayScale,
+            y: bottomCenter.y + outputCenterOffset.height * displayScale
+        )
+        let topCenterOffset = compositeLayout.topCenterFromBottomCenter
+        let topCenter = CGPoint(
+            x: bottomCenter.x + topCenterOffset.width * displayScale,
+            y: bottomCenter.y + topCenterOffset.height * displayScale
+        )
+
+        return ZStack {
+            Color(nsColor: .windowBackgroundColor)
+
+            Rectangle()
+                .fill(.clear)
+                .overlay {
+                    Rectangle()
+                        .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                }
+                .frame(
+                    width: compositeLayout.logicalBounds.width * displayScale,
+                    height: compositeLayout.logicalBounds.height * displayScale
+                )
+                .position(outputCenter)
+
+            Image(nsImage: bottomImage.image)
+                .resizable()
+                .frame(
+                    width: compositeLayout.bottomRect.width * displayScale,
+                    height: compositeLayout.bottomRect.height * displayScale
+                )
+                .position(bottomCenter)
+                .accessibilityLabel("底图")
+
+            Image(nsImage: topImage.image)
+                .resizable()
+                .frame(
+                    width: compositeLayout.topRect.width * displayScale,
+                    height: compositeLayout.topRect.height * displayScale
+                )
+                .position(topCenter)
+                .opacity(topImageOpacity / 100)
+                .accessibilityLabel("上层图片")
+        }
+        .contentShape(Rectangle())
+        .clipped()
+        .focusable()
+        .focusEffectDisabled()
+        .focused($isCanvasFocused)
+        .onTapGesture {
+            isCanvasFocused = true
+        }
+        .onKeyPress(phases: [.down, .repeat]) { keyPress in
+            handleKeyPress(keyPress)
+        }
+        .simultaneousGesture(doubleClickGesture(in: size))
+        .simultaneousGesture(magnificationGesture(in: size))
+        .simultaneousGesture(dragGesture(in: size))
+        .onAppear {
+            updatePreviewSize(size)
+            isCanvasFocused = true
+        }
+        .onChange(of: size) { _, newSize in
+            updatePreviewSize(newSize)
+        }
+        .onChange(of: interactionMode) { _, _ in
+            isCanvasFocused = true
+        }
+    }
+
     private func doubleClickGesture(in size: CGSize) -> some Gesture {
         SpatialTapGesture(count: 2)
-            .onEnded { value in
-                if imageScale > Self.minimumImageScale {
-                    setImageScale(Self.minimumImageScale, around: nil, in: size)
+            .onEnded { _ in
+                if interactionMode == .editTop {
+                    resetTopTransform()
                 } else {
-                    setImageScale(2, around: value.location, in: size)
+                    fitOutput(in: size)
                 }
             }
     }
@@ -488,198 +733,244 @@ private struct CompositePreview: View {
             .onChanged { value in
                 if !isMagnifying {
                     isMagnifying = true
-                    magnificationStartScale = imageScale
-                    magnificationStartOffset = imageOffset
+                    magnificationStartTopTransform = topTransform
+                    magnificationStartViewZoom = viewZoom
+                    magnificationStartViewOffset = viewOffset
                 }
 
-                let targetScale = clampedScale(
-                    magnificationStartScale * value.magnification
-                )
                 let anchor = CGPoint(
                     x: size.width * value.startAnchor.x,
                     y: size.height * value.startAnchor.y
                 )
-                imageScale = targetScale
-                imageOffset = offsetAfterZoom(
-                    from: magnificationStartScale,
-                    to: targetScale,
-                    currentOffset: magnificationStartOffset,
-                    around: anchor,
-                    in: size
-                )
+                if interactionMode == .editTop {
+                    magnifyTopImage(by: value.magnification, around: anchor, in: size)
+                } else {
+                    magnifyView(by: value.magnification, around: anchor, in: size)
+                }
             }
             .onEnded { _ in
                 isMagnifying = false
-                settleImageOffset(in: size)
+                if interactionMode == .inspectCanvas {
+                    settleViewOffset(in: size)
+                }
             }
     }
 
     private func dragGesture(in size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 1)
             .onChanged { value in
-                guard imageScale > Self.minimumImageScale else { return }
-
                 if !isDragging {
+                    if interactionMode == .editTop,
+                       !topImageFrame(in: size).contains(value.startLocation) {
+                        return
+                    }
                     isDragging = true
-                    dragStartOffset = imageOffset
+                    dragStartTopOffset = topTransform.offset
+                    dragStartViewOffset = viewOffset
                 }
 
-                let proposedOffset = CGSize(
-                    width: dragStartOffset.width + value.translation.width,
-                    height: dragStartOffset.height + value.translation.height
-                )
-                imageOffset = rubberBandedOffset(proposedOffset, at: imageScale, in: size)
+                if interactionMode == .editTop {
+                    topTransform.offset = CGSize(
+                        width: dragStartTopOffset.width + value.translation.width / displayScale,
+                        height: dragStartTopOffset.height + value.translation.height / displayScale
+                    )
+                } else {
+                    viewOffset = CGSize(
+                        width: dragStartViewOffset.width + value.translation.width,
+                        height: dragStartViewOffset.height + value.translation.height
+                    )
+                }
             }
             .onEnded { _ in
+                guard isDragging else { return }
                 isDragging = false
-                settleImageOffset(in: size)
+                if interactionMode == .inspectCanvas {
+                    settleViewOffset(in: size)
+                }
             }
     }
 
-    private func changeImageScale(by delta: CGFloat) {
-        setImageScale(imageScale + delta, around: nil, in: previewSize)
-    }
-
-    private func setImageScale(
-        _ proposedScale: CGFloat,
-        around anchor: CGPoint?,
-        in size: CGSize
-    ) {
-        let targetScale = clampedScale(proposedScale)
-        let targetOffset: CGSize
-
-        if targetScale == Self.minimumImageScale || size == .zero {
-            targetOffset = .zero
-        } else {
-            let zoomAnchor = anchor ?? CGPoint(x: size.width / 2, y: size.height / 2)
-            targetOffset = offsetAfterZoom(
-                from: imageScale,
-                to: targetScale,
-                currentOffset: imageOffset,
-                around: zoomAnchor,
-                in: size
-            )
-        }
-
-        withAnimation(.easeInOut(duration: 0.2)) {
-            imageScale = targetScale
-            imageOffset = targetOffset
-        }
-    }
-
-    private func updatePreviewSize(_ size: CGSize) {
-        guard size != previewSize else { return }
-
-        let previousMaximumOffset = maximumOffset(at: imageScale, in: previewSize)
-        let newMaximumOffset = maximumOffset(at: imageScale, in: size)
-        let relativeOffset = CGSize(
-            width: previousMaximumOffset.width > 0
-                ? imageOffset.width / previousMaximumOffset.width
-                : 0,
-            height: previousMaximumOffset.height > 0
-                ? imageOffset.height / previousMaximumOffset.height
-                : 0
+    private func topImageFrame(in size: CGSize) -> CGRect {
+        let bottomCenter = CGPoint(
+            x: size.width / 2 + viewOffset.width,
+            y: size.height / 2 + viewOffset.height
         )
-
-        previewSize = size
-        imageOffset = clampedOffset(
-            CGSize(
-                width: relativeOffset.width * newMaximumOffset.width,
-                height: relativeOffset.height * newMaximumOffset.height
-            ),
-            at: imageScale,
-            in: size
+        let layout = compositeLayout
+        let topSize = CGSize(
+            width: layout.topRect.width * displayScale,
+            height: layout.topRect.height * displayScale
+        )
+        let topCenterOffset = layout.topCenterFromBottomCenter
+        return CGRect(
+            x: bottomCenter.x + topCenterOffset.width * displayScale - topSize.width / 2,
+            y: bottomCenter.y + topCenterOffset.height * displayScale - topSize.height / 2,
+            width: topSize.width,
+            height: topSize.height
         )
     }
 
-    private func settleImageOffset(in size: CGSize) {
-        withAnimation(.easeOut(duration: 0.2)) {
-            imageOffset = clampedOffset(imageOffset, at: imageScale, in: size)
-        }
-    }
-
-    private func clampedScale(_ scale: CGFloat) -> CGFloat {
-        min(max(scale, Self.minimumImageScale), Self.maximumImageScale)
-    }
-
-    private func offsetAfterZoom(
-        from oldScale: CGFloat,
-        to newScale: CGFloat,
-        currentOffset: CGSize,
+    private func magnifyTopImage(
+        by magnification: CGFloat,
         around anchor: CGPoint,
         in size: CGSize
-    ) -> CGSize {
-        guard oldScale > 0 else { return .zero }
+    ) {
+        let startTransform = magnificationStartTopTransform
+        let targetScale = clampedTopScale(startTransform.scale * magnification)
+        let scaleRatio = targetScale / startTransform.scale
+        let bottomCenter = CGPoint(
+            x: size.width / 2 + viewOffset.width,
+            y: size.height / 2 + viewOffset.height
+        )
+        let startTopCenter = CGPoint(
+            x: bottomCenter.x + startTransform.offset.width * displayScale,
+            y: bottomCenter.y + startTransform.offset.height * displayScale
+        )
+        let targetTopCenter = CGPoint(
+            x: anchor.x + (startTopCenter.x - anchor.x) * scaleRatio,
+            y: anchor.y + (startTopCenter.y - anchor.y) * scaleRatio
+        )
 
-        let scaleRatio = newScale / oldScale
+        topTransform = TopImageTransform(
+            scale: targetScale,
+            offset: CGSize(
+                width: (targetTopCenter.x - bottomCenter.x) / displayScale,
+                height: (targetTopCenter.y - bottomCenter.y) / displayScale
+            )
+        )
+    }
+
+    private func magnifyView(
+        by magnification: CGFloat,
+        around anchor: CGPoint,
+        in size: CGSize
+    ) {
+        let targetZoom = clampedViewZoom(magnificationStartViewZoom * magnification)
+        let scaleRatio = targetZoom / magnificationStartViewZoom
         let anchorFromCenter = CGSize(
             width: anchor.x - size.width / 2,
             height: anchor.y - size.height / 2
         )
-        let proposedOffset = CGSize(
-            width: scaleRatio * currentOffset.width
+        viewZoom = targetZoom
+        viewOffset = CGSize(
+            width: scaleRatio * magnificationStartViewOffset.width
                 + (1 - scaleRatio) * anchorFromCenter.width,
-            height: scaleRatio * currentOffset.height
+            height: scaleRatio * magnificationStartViewOffset.height
                 + (1 - scaleRatio) * anchorFromCenter.height
         )
-        return clampedOffset(proposedOffset, at: newScale, in: size)
     }
 
-    private func rubberBandedOffset(
+    private func changeTopScale(by delta: CGFloat) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            topTransform.scale = clampedTopScale(topTransform.scale + delta)
+        }
+    }
+
+    private func changeViewZoom(by delta: CGFloat) {
+        let targetZoom = clampedViewZoom(viewZoom + delta)
+        withAnimation(.easeInOut(duration: 0.2)) {
+            viewZoom = targetZoom
+            viewOffset = clampedViewOffset(viewOffset, at: targetZoom, in: previewSize)
+        }
+    }
+
+    private func resetTopTransform() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            topTransform = TopImageTransform()
+        }
+    }
+
+    private func updatePreviewSize(_ size: CGSize) {
+        guard size.width > 0, size.height > 0, size != previewSize else { return }
+        previewSize = size
+        fitOutput(in: size)
+    }
+
+    private func fitOutput(in size: CGSize) {
+        guard size.width > 0, size.height > 0 else { return }
+
+        let layout = compositeLayout
+        fittedViewScale = min(
+            size.width / layout.logicalBounds.width,
+            size.height / layout.logicalBounds.height
+        ) * 0.96
+        viewZoom = Self.minimumViewZoom
+        viewOffset = CGSize(
+            width: -layout.outputCenterFromBottomCenter.width * fittedViewScale,
+            height: -layout.outputCenterFromBottomCenter.height * fittedViewScale
+        )
+    }
+
+    private func settleViewOffset(in size: CGSize) {
+        withAnimation(.easeOut(duration: 0.2)) {
+            viewOffset = clampedViewOffset(viewOffset, at: viewZoom, in: size)
+        }
+    }
+
+    private func clampedViewOffset(
         _ offset: CGSize,
-        at scale: CGFloat,
+        at zoom: CGFloat,
         in size: CGSize
     ) -> CGSize {
-        let constrainedOffset = clampedOffset(offset, at: scale, in: size)
+        guard size.width > 0, size.height > 0 else { return offset }
+
+        let layout = compositeLayout
+        let scale = fittedViewScale * zoom
+        let outputCenter = layout.outputCenterFromBottomCenter
+        let canvasCenterOffset = CGSize(
+            width: offset.width + outputCenter.width * scale,
+            height: offset.height + outputCenter.height * scale
+        )
+        let maximumOffset = CGSize(
+            width: max(0, (layout.logicalBounds.width * scale - size.width) / 2),
+            height: max(0, (layout.logicalBounds.height * scale - size.height) / 2)
+        )
+        let clampedCanvasCenterOffset = CGSize(
+            width: min(max(canvasCenterOffset.width, -maximumOffset.width), maximumOffset.width),
+            height: min(max(canvasCenterOffset.height, -maximumOffset.height), maximumOffset.height)
+        )
         return CGSize(
-            width: constrainedOffset.width + (offset.width - constrainedOffset.width) * 0.2,
-            height: constrainedOffset.height + (offset.height - constrainedOffset.height) * 0.2
+            width: clampedCanvasCenterOffset.width - outputCenter.width * scale,
+            height: clampedCanvasCenterOffset.height - outputCenter.height * scale
         )
     }
 
-    private func clampedOffset(
-        _ offset: CGSize,
-        at scale: CGFloat,
-        in size: CGSize
-    ) -> CGSize {
-        guard scale > Self.minimumImageScale,
-              size.width > 0,
-              size.height > 0
-        else {
-            return .zero
+    private func clampedTopScale(_ scale: CGFloat) -> CGFloat {
+        min(max(scale, Self.minimumTopScale), Self.maximumTopScale)
+    }
+
+    private func clampedViewZoom(_ zoom: CGFloat) -> CGFloat {
+        min(max(zoom, Self.minimumViewZoom), Self.maximumViewZoom)
+    }
+
+    private func pointDimension(_ value: CGFloat) -> String {
+        Double(value).formatted(
+            .number.precision(.fractionLength(value == value.rounded() ? 0 : 1))
+        )
+    }
+
+    private func handleKeyPress(_ keyPress: KeyPress) -> KeyPress.Result {
+        guard interactionMode == .editTop else { return .ignored }
+
+        let distance: CGFloat = keyPress.modifiers.contains(.shift) ? 10 : 1
+        let movement: CGSize
+        switch keyPress.key {
+        case .leftArrow:
+            movement = CGSize(width: -distance, height: 0)
+        case .rightArrow:
+            movement = CGSize(width: distance, height: 0)
+        case .upArrow:
+            movement = CGSize(width: 0, height: -distance)
+        case .downArrow:
+            movement = CGSize(width: 0, height: distance)
+        default:
+            return .ignored
         }
 
-        let maximumOffset = maximumOffset(at: scale, in: size)
-        return CGSize(
-            width: min(max(offset.width, -maximumOffset.width), maximumOffset.width),
-            height: min(max(offset.height, -maximumOffset.height), maximumOffset.height)
+        topTransform.offset = CGSize(
+            width: topTransform.offset.width + movement.width,
+            height: topTransform.offset.height + movement.height
         )
-    }
-
-    private func maximumOffset(at scale: CGFloat, in size: CGSize) -> CGSize {
-        guard scale > Self.minimumImageScale,
-              size.width > 0,
-              size.height > 0
-        else {
-            return .zero
-        }
-
-        let fittedSize = fittedBottomImageSize(in: size)
-        return CGSize(
-            width: max(0, (fittedSize.width * scale - size.width) / 2),
-            height: max(0, (fittedSize.height * scale - size.height) / 2)
-        )
-    }
-
-    private func fittedBottomImageSize(in size: CGSize) -> CGSize {
-        let imageSize = bottomImage.image.size
-        guard imageSize.width > 0, imageSize.height > 0 else { return .zero }
-
-        let fitScale = min(size.width / imageSize.width, size.height / imageSize.height)
-        return CGSize(
-            width: imageSize.width * fitScale,
-            height: imageSize.height * fitScale
-        )
+        return .handled
     }
 
     private func prepareExport() {
@@ -687,7 +978,10 @@ private struct CompositePreview: View {
             let data = try CompositeImageRenderer.pngData(
                 bottomImage: bottomImage.image,
                 topImage: topImage.image,
-                topOpacity: topImageOpacity / 100
+                topOpacity: topImageOpacity / 100,
+                bottomBackingScale: bottomBackingScale.value,
+                topBackingScale: topBackingScale.value,
+                transform: topTransform
             )
             let formatter = DateFormatter()
             formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -718,73 +1012,12 @@ private struct CompositePreview: View {
     }
 }
 
-private struct ParentWindowClickDismissal: NSViewRepresentable {
-    let onDismiss: () -> Void
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onDismiss: onDismiss)
-    }
-
+private struct PreviewWindowConfigurator: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
-        let view = ResizableSheetHostView()
-        context.coordinator.hostView = view
-        context.coordinator.startMonitoring()
-        return view
+        ResizableSheetHostView()
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.onDismiss = onDismiss
-    }
-
-    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
-        coordinator.stopMonitoring()
-    }
-
-    @MainActor
-    final class Coordinator {
-        weak var hostView: NSView?
-        var onDismiss: () -> Void
-
-        private var eventMonitor: Any?
-
-        init(onDismiss: @escaping () -> Void) {
-            self.onDismiss = onDismiss
-        }
-
-        func startMonitoring() {
-            guard eventMonitor == nil else { return }
-
-            eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) {
-                [weak self] event in
-                guard let self,
-                      let sheetWindow = hostView?.window,
-                      let parentWindow = sheetWindow.sheetParent,
-                      event.window === parentWindow
-                else {
-                    return event
-                }
-
-                let screenLocation = parentWindow.convertPoint(
-                    toScreen: event.locationInWindow
-                )
-                guard parentWindow.frame.contains(screenLocation),
-                      !sheetWindow.frame.contains(screenLocation)
-                else {
-                    return event
-                }
-
-                onDismiss()
-                return nil
-            }
-        }
-
-        func stopMonitoring() {
-            if let eventMonitor {
-                NSEvent.removeMonitor(eventMonitor)
-                self.eventMonitor = nil
-            }
-        }
-    }
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
 private final class ResizableSheetHostView: NSView {
