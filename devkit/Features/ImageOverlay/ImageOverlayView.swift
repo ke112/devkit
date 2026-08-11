@@ -331,6 +331,8 @@ private struct CompositePreview: View {
 
     private let bottomPixelSize: ImagePixelSize
     private let topPixelSize: ImagePixelSize
+    private let detectedBottomBackingScale: ImageBackingScale
+    private let detectedTopBackingScale: ImageBackingScale
 
     @Environment(\.dismiss) private var dismiss
     @FocusState private var isCanvasFocused: Bool
@@ -369,18 +371,18 @@ private struct CompositePreview: View {
                 width: max(1, Int(topImage.image.size.width)),
                 height: max(1, Int(topImage.image.size.height))
             )
-        _bottomBackingScale = State(
-            initialValue: CompositeImageRenderer.suggestedBackingScale(
-                for: bottomImage.image,
-                named: bottomImage.name
-            )
+        let detectedBottomBackingScale = CompositeImageRenderer.suggestedBackingScale(
+            for: bottomImage.image,
+            named: bottomImage.name
         )
-        _topBackingScale = State(
-            initialValue: CompositeImageRenderer.suggestedBackingScale(
-                for: topImage.image,
-                named: topImage.name
-            )
+        let detectedTopBackingScale = CompositeImageRenderer.suggestedBackingScale(
+            for: topImage.image,
+            named: topImage.name
         )
+        self.detectedBottomBackingScale = detectedBottomBackingScale
+        self.detectedTopBackingScale = detectedTopBackingScale
+        _bottomBackingScale = State(initialValue: detectedBottomBackingScale)
+        _topBackingScale = State(initialValue: detectedTopBackingScale)
     }
 
     private var compositeLayout: CompositeImageLayout {
@@ -516,10 +518,16 @@ private struct CompositePreview: View {
     private var backingScaleMenu: some View {
         Menu {
             Section("底图") {
-                backingScaleButtons(selection: $bottomBackingScale)
+                backingScaleButtons(
+                    selection: $bottomBackingScale,
+                    detectedScale: detectedBottomBackingScale
+                )
             }
             Section("上层图片") {
-                backingScaleButtons(selection: $topBackingScale)
+                backingScaleButtons(
+                    selection: $topBackingScale,
+                    detectedScale: detectedTopBackingScale
+                )
             }
         } label: {
             Image(systemName: "ruler")
@@ -531,15 +539,19 @@ private struct CompositePreview: View {
     }
 
     @ViewBuilder
-    private func backingScaleButtons(selection: Binding<ImageBackingScale>) -> some View {
+    private func backingScaleButtons(
+        selection: Binding<ImageBackingScale>,
+        detectedScale: ImageBackingScale
+    ) -> some View {
         ForEach(ImageBackingScale.allCases) { scale in
+            let title = scale == detectedScale ? "\(scale.label)  (Auto)" : scale.label
             Button {
                 selection.wrappedValue = scale
             } label: {
                 if selection.wrappedValue == scale {
-                    Label(scale.label, systemImage: "checkmark")
+                    Label(title, systemImage: "checkmark")
                 } else {
-                    Text(scale.label)
+                    Text(title)
                 }
             }
         }
