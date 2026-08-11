@@ -20,6 +20,14 @@ _Avoid_: Image zoom, transform scale
 The top image's position, scale, and opacity, applied identically in the preview and exported image.
 _Avoid_: Preview zoom, view transform
 
-**Output bounds**:
-The rectangular union, measured in screen points, of the bottom image and the transformed top image. The bottom image defines the minimum bounds; moving or enlarging the top image can expand them, and areas covered by neither image remain transparent. Export uses the higher source backing scale so point-based alignment does not discard source detail.
-_Avoid_: Bottom-image size, fixed canvas
+**Output canvas**:
+The rectangular union, measured in screen points, of the bottom image and the transformed top image. The bottom image defines the minimum bounds; moving or enlarging the top image can expand the canvas, and areas covered by neither image remain transparent. Export uses the higher source backing scale so point-based alignment does not discard source detail.
+_Avoid_: Output bounds, bottom-image size, fixed canvas
+
+**Preview viewport**:
+The visible workspace through which the output canvas is inspected. Panning or zooming the viewport never changes the exported image.
+_Avoid_: Output canvas, image transform
+
+**Top-image hit area**:
+The top image's displayed rectangular frame, including transparent pixels. A gesture that begins inside this area edits the top image; a gesture that begins elsewhere navigates the preview viewport.
+_Avoid_: Opaque pixels, selected layer

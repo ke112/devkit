@@ -209,6 +209,21 @@ struct DevKitTests {
         #expect(opaqueColor.blueComponent > opaqueColor.redComponent)
     }
 
+    @Test func previewViewportKeepsCanvasEdgeWithinViewportCenter() {
+        #expect(
+            PreviewViewportBoundary.clampedCanvasCenterOffset(
+                CGSize(width: 600, height: -500),
+                canvasSize: CGSize(width: 800, height: 600)
+            ) == CGSize(width: 400, height: -300)
+        )
+        #expect(
+            PreviewViewportBoundary.clampedCanvasCenterOffset(
+                CGSize(width: 120, height: -80),
+                canvasSize: CGSize(width: 800, height: 600)
+            ) == CGSize(width: 120, height: -80)
+        )
+    }
+
     private func makeImage(width: Int, height: Int, color: NSColor) -> NSImage {
         let bitmap = NSBitmapImageRep(
             bitmapDataPlanes: nil,

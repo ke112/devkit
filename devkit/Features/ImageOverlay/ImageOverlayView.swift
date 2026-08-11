@@ -297,9 +297,25 @@ private enum PreviewWindowMetrics {
     static let initialSize = CGSize(width: 900, height: 700)
 }
 
-private enum PreviewInteractionMode: String, CaseIterable {
-    case editTop
-    case inspectCanvas
+private enum PreviewGestureTarget {
+    case topImage
+    case viewport
+}
+
+enum PreviewViewportBoundary {
+    static func clampedCanvasCenterOffset(
+        _ offset: CGSize,
+        canvasSize: CGSize
+    ) -> CGSize {
+        let maximumOffset = CGSize(
+            width: max(0, canvasSize.width / 2),
+            height: max(0, canvasSize.height / 2)
+        )
+        return CGSize(
+            width: min(max(offset.width, -maximumOffset.width), maximumOffset.width),
+            height: min(max(offset.height, -maximumOffset.height), maximumOffset.height)
+        )
+    }
 }
 
 private struct CompositePreview: View {
@@ -318,7 +334,6 @@ private struct CompositePreview: View {
 
     @Environment(\.dismiss) private var dismiss
     @FocusState private var isCanvasFocused: Bool
-    @State private var interactionMode = PreviewInteractionMode.editTop
     @State private var topImageOpacity = 50.0
     @State private var topTransform = TopImageTransform()
     @State private var bottomBackingScale: ImageBackingScale
@@ -330,10 +345,11 @@ private struct CompositePreview: View {
     @State private var magnificationStartTopTransform = TopImageTransform()
     @State private var magnificationStartViewZoom: CGFloat = 1
     @State private var magnificationStartViewOffset = CGSize.zero
-    @State private var isMagnifying = false
+    @State private var magnificationTarget: PreviewGestureTarget?
     @State private var dragStartTopOffset = CGSize.zero
     @State private var dragStartViewOffset = CGSize.zero
-    @State private var isDragging = false
+    @State private var dragTarget: PreviewGestureTarget?
+    @State private var isSpacePressed = false
     @State private var exportDocument: PNGFileDocument?
     @State private var exportFilename = ""
     @State private var isExporterPresented = false
@@ -398,17 +414,14 @@ private struct CompositePreview: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                Picker("交互模式", selection: $interactionMode) {
-                    Text("编辑上层").tag(PreviewInteractionMode.editTop)
-                    Text("查看画布").tag(PreviewInteractionMode.inspectCanvas)
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .frame(width: 190)
-
                 backingScaleMenu
 
-                transformControls
+                topTransformControls
+
+                Divider()
+                    .frame(height: 20)
+
+                viewTransformControls
 
                 Button {
                     dismiss()
@@ -533,67 +546,82 @@ private struct CompositePreview: View {
     }
 
     @ViewBuilder
-    private var transformControls: some View {
+    private var topTransformControls: some View {
         HStack(spacing: 6) {
+            Image(systemName: "photo")
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("上层图片缩放")
+
             Button {
-                if interactionMode == .editTop {
-                    changeTopScale(by: -Self.topScaleStep)
-                } else {
-                    changeViewZoom(by: -Self.viewZoomStep)
-                }
+                changeTopScale(by: -Self.topScaleStep)
             } label: {
                 Image(systemName: "minus.magnifyingglass")
             }
             .buttonStyle(.borderless)
-            .disabled(
-                interactionMode == .editTop
-                    ? topTransform.scale <= Self.minimumTopScale
-                    : viewZoom <= Self.minimumViewZoom
-            )
-            .help("缩小")
+            .disabled(topTransform.scale <= Self.minimumTopScale)
+            .help("缩小上层图片")
 
-            if interactionMode == .editTop {
-                Text("\(Int((topTransform.scale * 100).rounded()))%")
-                    .monospacedDigit()
-                    .frame(width: 44, alignment: .trailing)
-            } else {
-                Text(viewZoom, format: .number.precision(.fractionLength(1)))
-                    .monospacedDigit()
-                    .frame(width: 28, alignment: .trailing)
-                Text("x")
-                    .foregroundStyle(.secondary)
-            }
+            Text("\(Int((topTransform.scale * 100).rounded()))%")
+                .monospacedDigit()
+                .frame(width: 44, alignment: .trailing)
 
             Button {
-                if interactionMode == .editTop {
-                    changeTopScale(by: Self.topScaleStep)
-                } else {
-                    changeViewZoom(by: Self.viewZoomStep)
-                }
+                changeTopScale(by: Self.topScaleStep)
             } label: {
                 Image(systemName: "plus.magnifyingglass")
             }
             .buttonStyle(.borderless)
-            .disabled(
-                interactionMode == .editTop
-                    ? topTransform.scale >= Self.maximumTopScale
-                    : viewZoom >= Self.maximumViewZoom
-            )
-            .help("放大")
+            .disabled(topTransform.scale >= Self.maximumTopScale)
+            .help("放大上层图片")
 
             Button {
-                if interactionMode == .editTop {
-                    resetTopTransform()
-                } else {
-                    fitOutput(in: previewSize)
-                }
+                resetTopTransform()
             } label: {
-                Image(systemName: interactionMode == .editTop
-                    ? "arrow.counterclockwise"
-                    : "arrow.up.left.and.arrow.down.right")
+                Image(systemName: "arrow.counterclockwise")
             }
             .buttonStyle(.borderless)
-            .help(interactionMode == .editTop ? "重置上层图片" : "适应窗口")
+            .help("重置上层图片")
+        }
+    }
+
+    @ViewBuilder
+    private var viewTransformControls: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "viewfinder")
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("画布缩放")
+
+            Button {
+                changeViewZoom(by: -Self.viewZoomStep)
+            } label: {
+                Image(systemName: "minus.magnifyingglass")
+            }
+            .buttonStyle(.borderless)
+            .disabled(viewZoom <= Self.minimumViewZoom)
+            .help("缩小画布")
+
+            Text(viewZoom, format: .number.precision(.fractionLength(1)))
+                .monospacedDigit()
+                .frame(width: 28, alignment: .trailing)
+            Text("x")
+                .foregroundStyle(.secondary)
+
+            Button {
+                changeViewZoom(by: Self.viewZoomStep)
+            } label: {
+                Image(systemName: "plus.magnifyingglass")
+            }
+            .buttonStyle(.borderless)
+            .disabled(viewZoom >= Self.maximumViewZoom)
+            .help("放大画布")
+
+            Button {
+                fitOutput(in: previewSize)
+            } label: {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+            }
+            .buttonStyle(.borderless)
+            .help("适应窗口")
         }
     }
 
@@ -699,7 +727,7 @@ private struct CompositePreview: View {
         .onTapGesture {
             isCanvasFocused = true
         }
-        .onKeyPress(phases: [.down, .repeat]) { keyPress in
+        .onKeyPress(phases: [.down, .repeat, .up]) { keyPress in
             handleKeyPress(keyPress)
         }
         .simultaneousGesture(doubleClickGesture(in: size))
@@ -712,15 +740,17 @@ private struct CompositePreview: View {
         .onChange(of: size) { _, newSize in
             updatePreviewSize(newSize)
         }
-        .onChange(of: interactionMode) { _, _ in
-            isCanvasFocused = true
+        .onChange(of: isCanvasFocused) { _, isFocused in
+            if !isFocused {
+                isSpacePressed = false
+            }
         }
     }
 
     private func doubleClickGesture(in size: CGSize) -> some Gesture {
         SpatialTapGesture(count: 2)
-            .onEnded { _ in
-                if interactionMode == .editTop {
+            .onEnded { value in
+                if gestureTarget(at: value.location, in: size) == .topImage {
                     resetTopTransform()
                 } else {
                     fitOutput(in: size)
@@ -731,63 +761,59 @@ private struct CompositePreview: View {
     private func magnificationGesture(in size: CGSize) -> some Gesture {
         MagnifyGesture()
             .onChanged { value in
-                if !isMagnifying {
-                    isMagnifying = true
+                let anchor = CGPoint(
+                    x: size.width * value.startAnchor.x,
+                    y: size.height * value.startAnchor.y
+                )
+                if magnificationTarget == nil {
+                    magnificationTarget = gestureTarget(at: anchor, in: size)
                     magnificationStartTopTransform = topTransform
                     magnificationStartViewZoom = viewZoom
                     magnificationStartViewOffset = viewOffset
                 }
 
-                let anchor = CGPoint(
-                    x: size.width * value.startAnchor.x,
-                    y: size.height * value.startAnchor.y
-                )
-                if interactionMode == .editTop {
+                if magnificationTarget == .topImage {
                     magnifyTopImage(by: value.magnification, around: anchor, in: size)
                 } else {
                     magnifyView(by: value.magnification, around: anchor, in: size)
                 }
             }
             .onEnded { _ in
-                isMagnifying = false
-                if interactionMode == .inspectCanvas {
-                    settleViewOffset(in: size)
-                }
+                magnificationTarget = nil
             }
     }
 
     private func dragGesture(in size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 1)
             .onChanged { value in
-                if !isDragging {
-                    if interactionMode == .editTop,
-                       !topImageFrame(in: size).contains(value.startLocation) {
-                        return
-                    }
-                    isDragging = true
+                if dragTarget == nil {
+                    dragTarget = isSpacePressed
+                        ? .viewport
+                        : gestureTarget(at: value.startLocation, in: size)
                     dragStartTopOffset = topTransform.offset
                     dragStartViewOffset = viewOffset
                 }
 
-                if interactionMode == .editTop {
+                if dragTarget == .topImage {
                     topTransform.offset = CGSize(
                         width: dragStartTopOffset.width + value.translation.width / displayScale,
                         height: dragStartTopOffset.height + value.translation.height / displayScale
                     )
                 } else {
-                    viewOffset = CGSize(
+                    let proposedOffset = CGSize(
                         width: dragStartViewOffset.width + value.translation.width,
                         height: dragStartViewOffset.height + value.translation.height
                     )
+                    viewOffset = clampedViewOffset(proposedOffset, at: viewZoom, in: size)
                 }
             }
             .onEnded { _ in
-                guard isDragging else { return }
-                isDragging = false
-                if interactionMode == .inspectCanvas {
-                    settleViewOffset(in: size)
-                }
+                dragTarget = nil
             }
+    }
+
+    private func gestureTarget(at location: CGPoint, in size: CGSize) -> PreviewGestureTarget {
+        topImageFrame(in: size).contains(location) ? .topImage : .viewport
     }
 
     private func topImageFrame(in size: CGSize) -> CGRect {
@@ -851,12 +877,13 @@ private struct CompositePreview: View {
             height: anchor.y - size.height / 2
         )
         viewZoom = targetZoom
-        viewOffset = CGSize(
+        let proposedOffset = CGSize(
             width: scaleRatio * magnificationStartViewOffset.width
                 + (1 - scaleRatio) * anchorFromCenter.width,
             height: scaleRatio * magnificationStartViewOffset.height
                 + (1 - scaleRatio) * anchorFromCenter.height
         )
+        viewOffset = clampedViewOffset(proposedOffset, at: targetZoom, in: size)
     }
 
     private func changeTopScale(by delta: CGFloat) {
@@ -900,12 +927,6 @@ private struct CompositePreview: View {
         )
     }
 
-    private func settleViewOffset(in size: CGSize) {
-        withAnimation(.easeOut(duration: 0.2)) {
-            viewOffset = clampedViewOffset(viewOffset, at: viewZoom, in: size)
-        }
-    }
-
     private func clampedViewOffset(
         _ offset: CGSize,
         at zoom: CGFloat,
@@ -920,13 +941,12 @@ private struct CompositePreview: View {
             width: offset.width + outputCenter.width * scale,
             height: offset.height + outputCenter.height * scale
         )
-        let maximumOffset = CGSize(
-            width: max(0, (layout.logicalBounds.width * scale - size.width) / 2),
-            height: max(0, (layout.logicalBounds.height * scale - size.height) / 2)
-        )
-        let clampedCanvasCenterOffset = CGSize(
-            width: min(max(canvasCenterOffset.width, -maximumOffset.width), maximumOffset.width),
-            height: min(max(canvasCenterOffset.height, -maximumOffset.height), maximumOffset.height)
+        let clampedCanvasCenterOffset = PreviewViewportBoundary.clampedCanvasCenterOffset(
+            canvasCenterOffset,
+            canvasSize: CGSize(
+                width: layout.logicalBounds.width * scale,
+                height: layout.logicalBounds.height * scale
+            )
         )
         return CGSize(
             width: clampedCanvasCenterOffset.width - outputCenter.width * scale,
@@ -949,7 +969,12 @@ private struct CompositePreview: View {
     }
 
     private func handleKeyPress(_ keyPress: KeyPress) -> KeyPress.Result {
-        guard interactionMode == .editTop else { return .ignored }
+        if keyPress.key == .space {
+            isSpacePressed = keyPress.phase != .up
+            return .handled
+        }
+
+        guard keyPress.phase != .up else { return .ignored }
 
         let distance: CGFloat = keyPress.modifiers.contains(.shift) ? 10 : 1
         let movement: CGSize
