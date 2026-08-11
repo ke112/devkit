@@ -548,9 +548,8 @@ private struct CompositePreview: View {
     @ViewBuilder
     private var topTransformControls: some View {
         HStack(spacing: 6) {
-            Image(systemName: "photo")
+            Text("叠图")
                 .foregroundStyle(.secondary)
-                .accessibilityLabel("上层图片缩放")
 
             Button {
                 changeTopScale(by: -Self.topScaleStep)
@@ -587,9 +586,8 @@ private struct CompositePreview: View {
     @ViewBuilder
     private var viewTransformControls: some View {
         HStack(spacing: 6) {
-            Image(systemName: "viewfinder")
+            Text("画布")
                 .foregroundStyle(.secondary)
-                .accessibilityLabel("画布缩放")
 
             Button {
                 changeViewZoom(by: -Self.viewZoomStep)
@@ -618,10 +616,10 @@ private struct CompositePreview: View {
             Button {
                 fitOutput(in: previewSize)
             } label: {
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                Image(systemName: "arrow.counterclockwise")
             }
             .buttonStyle(.borderless)
-            .help("适应窗口")
+            .help("重置画布")
         }
     }
 
@@ -692,7 +690,7 @@ private struct CompositePreview: View {
                 .fill(.clear)
                 .overlay {
                     Rectangle()
-                        .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                        .stroke(Color.primary.opacity(0.35), lineWidth: 1)
                 }
                 .frame(
                     width: compositeLayout.logicalBounds.width * displayScale,

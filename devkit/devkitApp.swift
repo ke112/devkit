@@ -6,7 +6,7 @@ struct DevKitApp: App {
         Window("DevKit", id: "main") {
             ContentView()
         }
-        .defaultSize(width: 960, height: 680)
+        .defaultSize(width: 960, height: 900)
         .windowResizability(.contentMinSize)
     }
 }
