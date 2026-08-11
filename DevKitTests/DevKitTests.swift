@@ -224,6 +224,42 @@ struct DevKitTests {
         )
     }
 
+    @Test func homeFeaturePreferencesPreserveOrderAndVisibility() throws {
+        let suiteName = "DevKitTests.HomeFeaturePreferences.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = [
+            HomeFeatureSetting(feature: .imageOverlay, isVisible: false),
+            HomeFeatureSetting(feature: .simulatorManagement, isVisible: true),
+        ]
+
+        HomeFeaturePreferences.save(settings, to: defaults)
+
+        #expect(HomeFeaturePreferences.load(from: defaults) == settings)
+    }
+
+    @Test func homeFeaturePreferencesAppendMissingFeaturesOnce() {
+        let settings = HomeFeaturePreferences.normalized([
+            HomeFeatureSetting(feature: .imageOverlay, isVisible: false),
+            HomeFeatureSetting(feature: .imageOverlay, isVisible: true),
+        ])
+
+        #expect(settings == [
+            HomeFeatureSetting(feature: .imageOverlay, isVisible: false),
+            HomeFeatureSetting(feature: .simulatorManagement, isVisible: true),
+        ])
+    }
+
+    @Test func homeFeaturePreferencesMoveFeatureToTargetPosition() {
+        let settings = HomeFeaturePreferences.moving(
+            .imageOverlay,
+            to: .simulatorManagement,
+            in: HomeFeaturePreferences.defaultSettings
+        )
+
+        #expect(settings.map(\.feature) == [.imageOverlay, .simulatorManagement])
+    }
+
     private func makeImage(width: Int, height: Int, color: NSColor) -> NSImage {
         let bitmap = NSBitmapImageRep(
             bitmapDataPlanes: nil,

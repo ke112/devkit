@@ -294,7 +294,7 @@ private struct ImageImportArea: View {
 
 private enum PreviewWindowMetrics {
     static let minimumSize = CGSize(width: 720, height: 560)
-    static let initialSize = CGSize(width: 900, height: 700)
+    static let initialSize = CGSize(width: 840, height: 1100)
 }
 
 private enum PreviewGestureTarget {
