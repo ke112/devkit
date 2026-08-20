@@ -1550,6 +1550,12 @@ class AppStoreMetadataUploader:
         self,
         locale_plan: LocalePlan,
     ) -> list[ScreenshotSetPlan]:
+        # A missing or invalid configured root is an explicit opt-out. Do not
+        # fall back to per-locale material screenshots, especially when the
+        # clear-existing-screenshots option is enabled.
+        screenshots_root = self._upload_config.screenshots_root
+        if not screenshots_root or not screenshots_root.is_dir():
+            return []
         metadata = locale_plan.metadata
         configured_sets = metadata.get('screenshotSets')
         if isinstance(configured_sets, list) and configured_sets:

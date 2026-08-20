@@ -378,6 +378,51 @@ struct DevKitTests {
         #expect(normalized.upload.screenshotsRoot == "screenshots")
     }
 
+    @Test func appStoreReleaseUsesIOSAndSharedMaterialSettings() {
+        var configuration = AppStoreReleaseConfiguration.empty
+        configuration.app.platform = "MAC_OS"
+        configuration.importSettings.localizationsRoot = "/tmp/materials"
+        configuration.importSettings.disabledLocales = ["fr-FR"]
+        configuration.upload.localizationsRoot = "/tmp/other-materials"
+        configuration.upload.disabledLocales = ["ja"]
+
+        let normalized = AppStoreReleaseConfigurationFile.normalizedForApp(configuration)
+
+        #expect(normalized.app.platform == "IOS")
+        #expect(normalized.upload.localizationsRoot == "/tmp/materials")
+        #expect(normalized.upload.disabledLocales == ["fr-FR"])
+    }
+
+    @Test func appStoreReleaseRequiresExistingScreenshotDirectory() throws {
+        let storageURL = FileManager.default.temporaryDirectory
+            .appending(path: "DevKitTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: storageURL) }
+        try FileManager.default.createDirectory(
+            at: storageURL.appending(path: "screenshots", directoryHint: .isDirectory),
+            withIntermediateDirectories: true
+        )
+        let configURL = storageURL.appending(path: "config.json")
+
+        #expect(
+            AppStoreReleaseConfigurationFile.existingDirectory(
+                "screenshots",
+                relativeTo: configURL
+            )?.path == storageURL.appending(path: "screenshots").path
+        )
+        #expect(
+            AppStoreReleaseConfigurationFile.existingDirectory(
+                "missing",
+                relativeTo: configURL
+            ) == nil
+        )
+        #expect(
+            AppStoreReleaseConfigurationFile.existingDirectory(
+                "",
+                relativeTo: configURL
+            ) == nil
+        )
+    }
+
     private func makeImage(width: Int, height: Int, color: NSColor) -> NSImage {
         let bitmap = NSBitmapImageRep(
             bitmapDataPlanes: nil,

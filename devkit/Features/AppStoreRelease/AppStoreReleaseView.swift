@@ -136,6 +136,7 @@ struct AppStoreReleaseView: View {
                         get: { model.configuration! },
                         set: { model.updateConfiguration($0) }
                     ),
+                    configURL: model.configURL,
                     isImportLocaleMapValid: $isImportLocaleMapValid,
                     isScreenshotDirectoryMapValid: $isScreenshotDirectoryMapValid
                 )
@@ -170,11 +171,6 @@ struct AppStoreReleaseView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("发版物料")
                         .font(.headline)
-                    Text(model.storageDirectoryURL.path)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
                 }
 
                 Spacer()
@@ -284,6 +280,7 @@ struct AppStoreReleaseView: View {
 
 private struct AppStoreReleaseConfigurationForm: View {
     @Binding var configuration: AppStoreReleaseConfiguration
+    let configURL: URL
     @Binding var isImportLocaleMapValid: Bool
     @Binding var isScreenshotDirectoryMapValid: Bool
 
@@ -292,55 +289,73 @@ private struct AppStoreReleaseConfigurationForm: View {
             Section("App Store Connect 认证") {
                 TextField("Issuer ID", text: $configuration.auth.issuerID)
                 TextField("Key ID", text: $configuration.auth.keyID)
-                TextField("私钥路径", text: $configuration.auth.privateKeyPath)
+                PathField(
+                    title: "私钥路径",
+                    path: $configuration.auth.privateKeyPath,
+                    selection: .file
+                )
             }
 
             Section("App") {
                 TextField("App ID", text: $configuration.app.appID)
                 TextField("Bundle ID", text: $configuration.app.bundleID)
-                TextField("平台", text: $configuration.app.platform)
                 TextField("版本号", text: $configuration.app.versionString)
                 TextField("默认名称", text: $configuration.app.defaultName)
             }
 
             Section("物料导入") {
-                TextField("物料目录", text: $configuration.importSettings.localizationsRoot)
+                PathField(
+                    title: "物料目录",
+                    path: materialDirectory,
+                    selection: .directory
+                )
                 TextField("飞书表格", text: $configuration.importSettings.feishuSheetURL)
-                TextField("Lark 身份", text: $configuration.importSettings.larkIdentity)
                 LocaleListField(
-                    title: "禁用语种",
-                    locales: $configuration.importSettings.disabledLocales
+                    title: "跳过语种（可选）",
+                    locales: disabledLocales,
+                    help: "填写后，这些 locale 不会导入或上传；留空则处理全部语种。"
                 )
                 StringMapField(
-                    title: "语种映射",
+                    title: "语种映射（可选）",
                     mapping: $configuration.importSettings.localeMap,
-                    isValid: $isImportLocaleMapValid
+                    isValid: $isImportLocaleMapValid,
+                    help: "仅在飞书语言名称无法被内置规则识别时填写，例如 英语=en-US。"
                 )
             }
 
             Section("App Store 上传") {
-                TextField("物料目录", text: $configuration.upload.localizationsRoot)
-                TextField("截图目录", text: $configuration.upload.screenshotsRoot)
-                StringMapField(
-                    title: "截图目录映射",
-                    mapping: $configuration.upload.localeScreenshotDirectoryMap,
-                    isValid: $isScreenshotDirectoryMapValid
+                PathField(
+                    title: "截图目录",
+                    path: $configuration.upload.screenshotsRoot,
+                    selection: .directory
                 )
-                LocaleListField(
-                    title: "禁用语种",
-                    locales: $configuration.upload.disabledLocales
+                Text(
+                    hasValidScreenshotDirectory
+                        ? "将从该目录读取截图。"
+                        : "目录为空或无效时，将跳过全部截图操作，包括清空线上截图。"
                 )
-                TextField(
-                    "截图显示类型",
-                    text: $configuration.upload.defaultScreenshotDisplayType
-                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                Group {
+                    StringMapField(
+                        title: "截图目录映射（可选）",
+                        mapping: $configuration.upload.localeScreenshotDirectoryMap,
+                        isValid: $isScreenshotDirectoryMapValid,
+                        help: "仅在截图子目录名与 locale 不一致时填写。"
+                    )
+                    TextField(
+                        "截图显示类型",
+                        text: $configuration.upload.defaultScreenshotDisplayType
+                    )
+                    Toggle(
+                        "上传前清空截图",
+                        isOn: $configuration.upload.clearExistingScreenshots
+                    )
+                }
+                .disabled(!hasValidScreenshotDirectory)
                 Toggle(
                     "允许创建本地化",
                     isOn: $configuration.upload.allowCreateLocalizations
-                )
-                Toggle(
-                    "上传前清空截图",
-                    isOn: $configuration.upload.clearExistingScreenshots
                 )
                 Toggle(
                     "单语种失败后继续",
@@ -361,27 +376,61 @@ private struct AppStoreReleaseConfigurationForm: View {
         .formStyle(.grouped)
         .textFieldStyle(.roundedBorder)
     }
+
+    private var materialDirectory: Binding<String> {
+        Binding(
+            get: { configuration.importSettings.localizationsRoot },
+            set: {
+                configuration.importSettings.localizationsRoot = $0
+                configuration.upload.localizationsRoot = $0
+            }
+        )
+    }
+
+    private var disabledLocales: Binding<[String]> {
+        Binding(
+            get: { configuration.importSettings.disabledLocales },
+            set: {
+                configuration.importSettings.disabledLocales = $0
+                configuration.upload.disabledLocales = $0
+            }
+        )
+    }
+
+    private var hasValidScreenshotDirectory: Bool {
+        AppStoreReleaseConfigurationFile.existingDirectory(
+            configuration.upload.screenshotsRoot,
+            relativeTo: configURL
+        ) != nil
+    }
 }
 
 private struct LocaleListField: View {
     let title: String
     @Binding var locales: [String]
+    let help: String
     @State private var text: String
 
-    init(title: String, locales: Binding<[String]>) {
+    init(title: String, locales: Binding<[String]>, help: String) {
         self.title = title
         _locales = locales
+        self.help = help
         _text = State(initialValue: locales.wrappedValue.joined(separator: ", "))
     }
 
     var body: some View {
-        TextField(title, text: $text, prompt: Text("en-US, id"))
-            .onChange(of: text) { _, newValue in
-                locales = newValue
-                    .split(separator: ",")
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-            }
+        VStack(alignment: .leading, spacing: 5) {
+            TextField(title, text: $text, prompt: Text("en-US, id"))
+                .onChange(of: text) { _, newValue in
+                    locales = newValue
+                        .split(separator: ",")
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                }
+            Text(help)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -389,16 +438,19 @@ private struct StringMapField: View {
     let title: String
     @Binding var mapping: [String: String]
     @Binding var isValid: Bool
+    let help: String
     @State private var text: String
 
     init(
         title: String,
         mapping: Binding<[String: String]>,
-        isValid: Binding<Bool>
+        isValid: Binding<Bool>,
+        help: String
     ) {
         self.title = title
         _mapping = mapping
         _isValid = isValid
+        self.help = help
         _text = State(initialValue: Self.formatted(mapping.wrappedValue))
     }
 
@@ -420,7 +472,7 @@ private struct StringMapField: View {
                         isValid = false
                     }
                 }
-            Text(isValid ? "每行一项：名称=值" : "每行使用 名称=值 格式")
+            Text(isValid ? help : "每行使用 名称=值 格式")
                 .font(.caption)
                 .foregroundStyle(isValid ? Color.secondary : Color.red)
         }
@@ -441,6 +493,68 @@ private struct StringMapField: View {
             result[key] = value
         }
         return result
+    }
+}
+
+private struct PathField: View {
+    enum Selection: Equatable {
+        case file
+        case directory
+
+        var contentType: UTType {
+            switch self {
+            case .file: .data
+            case .directory: .folder
+            }
+        }
+
+        func accepts(_ url: URL) -> Bool {
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+                return false
+            }
+            switch self {
+            case .file: return !isDirectory.boolValue
+            case .directory: return isDirectory.boolValue
+            }
+        }
+    }
+
+    let title: String
+    @Binding var path: String
+    let selection: Selection
+    @State private var isImporterPresented = false
+
+    var body: some View {
+        LabeledContent(title) {
+            HStack(spacing: 6) {
+                TextField("", text: $path)
+                Button {
+                    isImporterPresented = true
+                } label: {
+                    Image(systemName: selection == .directory ? "folder" : "doc")
+                }
+                .buttonStyle(.borderless)
+                .help(selection == .directory ? "选择目录" : "选择文件")
+            }
+            .dropDestination(for: URL.self) { urls, _ in
+                guard let url = urls.first(where: selection.accepts) else { return false }
+                path = url.path
+                return true
+            }
+        }
+        .fileImporter(
+            isPresented: $isImporterPresented,
+            allowedContentTypes: [selection.contentType],
+            allowsMultipleSelection: false
+        ) { result in
+            guard case .success(let urls) = result,
+                  let url = urls.first,
+                  selection.accepts(url) else {
+                return
+            }
+            path = url.path
+        }
     }
 }
 
@@ -599,7 +713,7 @@ private final class AppStoreReleaseModel {
     }
 
     func updateConfiguration(_ newValue: AppStoreReleaseConfiguration) {
-        configuration = newValue
+        configuration = AppStoreReleaseConfigurationFile.normalizedForApp(newValue)
         saveStatus = .saving
         saveConfiguration()
     }
@@ -639,11 +753,18 @@ private final class AppStoreReleaseModel {
     }
 
     func runUpload() {
+        let skipsScreenshots = configuration.map {
+            AppStoreReleaseConfigurationFile.existingDirectory(
+                $0.upload.screenshotsRoot,
+                relativeTo: configURL
+            ) == nil
+        } ?? true
         run(
             scriptName: "upload_localizations",
             title: "正在上传到 App Store Connect",
             successTitle: "App Store Connect 上传完成",
-            reloadsMaterials: false
+            reloadsMaterials: false,
+            additionalArguments: skipsScreenshots ? ["--skip-screenshots"] : []
         )
     }
 
@@ -651,7 +772,8 @@ private final class AppStoreReleaseModel {
         scriptName: String,
         title: String,
         successTitle: String,
-        reloadsMaterials: Bool
+        reloadsMaterials: Bool,
+        additionalArguments: [String] = []
     ) {
         guard !isRunning, configuration != nil else { return }
         guard saveConfiguration() else { return }
@@ -678,7 +800,7 @@ private final class AppStoreReleaseModel {
                         scriptURL.path,
                         "--config",
                         configURL.path,
-                    ],
+                    ] + additionalArguments,
                     currentDirectoryURL: storageDirectoryURL
                 ) { chunk in
                     Task { @MainActor [weak self] in
@@ -710,7 +832,9 @@ private final class AppStoreReleaseModel {
     private func saveConfiguration() -> Bool {
         guard let configuration else { return false }
         do {
-            try AppStoreReleaseConfigurationFile.save(configuration, to: configURL)
+            let normalized = AppStoreReleaseConfigurationFile.normalizedForApp(configuration)
+            self.configuration = normalized
+            try AppStoreReleaseConfigurationFile.save(normalized, to: configURL)
             saveStatus = .saved
             return true
         } catch {

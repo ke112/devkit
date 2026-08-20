@@ -193,14 +193,34 @@ enum AppStoreReleaseConfigurationFile {
         if !normalized.importSettings.localizationsRoot.hasPrefix("/") {
             normalized.importSettings.localizationsRoot = "localizations"
         }
-        if !normalized.upload.localizationsRoot.hasPrefix("/") {
-            normalized.upload.localizationsRoot = "localizations"
-        }
         if !normalized.upload.screenshotsRoot.isEmpty,
            !normalized.upload.screenshotsRoot.hasPrefix("/") {
             normalized.upload.screenshotsRoot = "screenshots"
         }
+        return normalizedForApp(normalized)
+    }
+
+    static func normalizedForApp(
+        _ configuration: AppStoreReleaseConfiguration
+    ) -> AppStoreReleaseConfiguration {
+        var normalized = configuration
+        normalized.app.platform = "IOS"
+        normalized.upload.localizationsRoot = normalized.importSettings.localizationsRoot
+        normalized.upload.disabledLocales = normalized.importSettings.disabledLocales
         return normalized
+    }
+
+    static func existingDirectory(_ path: String, relativeTo configURL: URL) -> URL? {
+        guard !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        let url = resolvedDirectory(path, relativeTo: configURL)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return nil
+        }
+        return url
     }
 }
 
