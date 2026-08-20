@@ -1,0 +1,38 @@
+{
+  "auth": {
+    "issuer_id": "00000000-0000-0000-0000-000000000000",
+    "key_id": "ABC123DEFG",
+    "private_key_path": "~/.appstoreconnect/AuthKey_ABC123DEFG.p8"
+  },
+  "app": {
+    "app_id": "12345678910",
+    "bundle_id": "com.example.app",
+    "platform": "IOS",
+    "version_string": "1.0.0",
+    "default_name": "Example App"
+  },
+  "import": {
+    "localizations_root": "localizations",
+    "feishu_sheet_url": "https://example.feishu.cn/wiki/example-sheet",
+    "lark_identity": "auto",
+    "disabled_locales": [],
+    "locale_map": {
+      "英语": "en-US"
+    }
+  },
+  "upload": {
+    "localizations_root": "localizations",
+    "screenshots_root": "",
+    "locale_screenshot_dir_map": {
+      "en-US": "en-US",
+      "id": "id"
+    },
+    "disabled_locales": [],
+    "default_screenshot_display_type": "APP_IPHONE_67",
+    "allow_create_localizations": true,
+    "clear_existing_screenshots": true,
+    "continue_on_locale_error": false,
+    "poll_interval_seconds": 5,
+    "poll_timeout_seconds": 300
+  }
+}

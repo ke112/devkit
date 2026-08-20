@@ -53,6 +53,8 @@ struct ContentView: View {
                     SimulatorManagementView()
                 case .imageOverlay:
                     ImageOverlayView()
+                case .appStoreRelease:
+                    AppStoreReleaseView()
                 }
             }
         }
@@ -70,6 +72,7 @@ struct ContentView: View {
 enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
     case simulatorManagement
     case imageOverlay
+    case appStoreRelease
 
     var id: Self { self }
 
@@ -79,6 +82,8 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
             "iOS 模拟器管理"
         case .imageOverlay:
             "图片叠加"
+        case .appStoreRelease:
+            "iOS App 发版"
         }
     }
 
@@ -88,6 +93,8 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
             "iphone.gen3"
         case .imageOverlay:
             "square.stack.3d.up"
+        case .appStoreRelease:
+            "shippingbox.and.arrow.backward"
         }
     }
 }

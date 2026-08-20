@@ -235,7 +235,11 @@ struct DevKitTests {
 
         HomeFeaturePreferences.save(settings, to: defaults)
 
-        #expect(HomeFeaturePreferences.load(from: defaults) == settings)
+        #expect(HomeFeaturePreferences.load(from: defaults) == [
+            HomeFeatureSetting(feature: .imageOverlay, isVisible: false),
+            HomeFeatureSetting(feature: .simulatorManagement, isVisible: true),
+            HomeFeatureSetting(feature: .appStoreRelease, isVisible: true),
+        ])
     }
 
     @Test func homeFeaturePreferencesAppendMissingFeaturesOnce() {
@@ -247,6 +251,7 @@ struct DevKitTests {
         #expect(settings == [
             HomeFeatureSetting(feature: .imageOverlay, isVisible: false),
             HomeFeatureSetting(feature: .simulatorManagement, isVisible: true),
+            HomeFeatureSetting(feature: .appStoreRelease, isVisible: true),
         ])
     }
 
@@ -257,7 +262,120 @@ struct DevKitTests {
             in: HomeFeaturePreferences.defaultSettings
         )
 
-        #expect(settings.map(\.feature) == [.imageOverlay, .simulatorManagement])
+        #expect(
+            settings.map(\.feature)
+                == [.imageOverlay, .simulatorManagement, .appStoreRelease]
+        )
+    }
+
+    @Test func appStoreReleaseConfigurationPreservesEveryField() throws {
+        let data = Data(
+            """
+            {
+              "auth": {
+                "issuer_id": "issuer",
+                "key_id": "key",
+                "private_key_path": "~/AuthKey.p8"
+              },
+              "app": {
+                "app_id": "123",
+                "bundle_id": "ai.example.app",
+                "platform": "IOS",
+                "version_string": "2.1.0",
+                "default_name": "Example"
+              },
+              "import": {
+                "localizations_root": "../localizations",
+                "feishu_sheet_url": "https://example.com/sheet",
+                "lark_identity": "auto",
+                "disabled_locales": ["fr"],
+                "locale_map": {"英语": "en-US"}
+              },
+              "upload": {
+                "localizations_root": "../localizations",
+                "screenshots_root": "~/Screenshots",
+                "locale_screenshot_dir_map": {"en-US": "English"},
+                "disabled_locales": ["fr"],
+                "default_screenshot_display_type": "APP_IPHONE_67",
+                "allow_create_localizations": true,
+                "clear_existing_screenshots": true,
+                "continue_on_locale_error": false,
+                "poll_interval_seconds": 5,
+                "poll_timeout_seconds": 300
+              }
+            }
+            """.utf8
+        )
+
+        let configuration = try JSONDecoder().decode(
+            AppStoreReleaseConfiguration.self,
+            from: data
+        )
+        let encoded = try JSONEncoder().encode(configuration)
+        let decoded = try JSONDecoder().decode(
+            AppStoreReleaseConfiguration.self,
+            from: encoded
+        )
+
+        #expect(decoded == configuration)
+        #expect(decoded.app.versionString == "2.1.0")
+        #expect(decoded.importSettings.localeMap == ["英语": "en-US"])
+        #expect(decoded.upload.pollTimeoutSeconds == 300)
+    }
+
+    @Test func appStoreReleaseResolvesLocalizationDirectoryFromConfigDirectory() {
+        let configURL = URL(
+            fileURLWithPath: "/Users/test/Library/Application Support/DevKit/AppStoreRelease/config.json"
+        )
+
+        let resolved = AppStoreReleaseConfigurationFile.resolvedDirectory(
+            "../localizations",
+            relativeTo: configURL
+        )
+
+        #expect(
+            resolved.path
+                == "/Users/test/Library/Application Support/DevKit/localizations"
+        )
+    }
+
+    @Test func appStoreReleaseFirstUseCreatesIndependentEmptyConfiguration() throws {
+        let storageURL = FileManager.default.temporaryDirectory
+            .appending(path: "DevKitTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: storageURL) }
+
+        let prepared = try AppStoreReleaseConfigurationFile.prepareConfiguration(
+            storageDirectory: storageURL
+        )
+
+        #expect(prepared.isFirstUse)
+        #expect(prepared.configuration == .empty)
+        #expect(
+            FileManager.default.fileExists(
+                atPath: AppStoreReleaseConfigurationFile
+                    .configURL(storageDirectory: storageURL).path
+            )
+        )
+
+        let reopened = try AppStoreReleaseConfigurationFile.prepareConfiguration(
+            storageDirectory: storageURL
+        )
+        #expect(!reopened.isFirstUse)
+    }
+
+    @Test func importedRelativeMaterialPathsBecomeDevKitRelativePaths() {
+        var configuration = AppStoreReleaseConfiguration.empty
+        configuration.importSettings.localizationsRoot = "../localizations"
+        configuration.upload.localizationsRoot = "../localizations"
+        configuration.upload.screenshotsRoot = "screenshots"
+
+        let normalized = AppStoreReleaseConfigurationFile.normalizedImportedConfiguration(
+            configuration
+        )
+
+        #expect(normalized.importSettings.localizationsRoot == "localizations")
+        #expect(normalized.upload.localizationsRoot == "localizations")
+        #expect(normalized.upload.screenshotsRoot == "screenshots")
     }
 
     private func makeImage(width: Int, height: Int, color: NSColor) -> NSImage {
