@@ -423,6 +423,40 @@ struct DevKitTests {
         )
     }
 
+    @Test func appStoreVersionsDecodeStatusAndReleaseInformation() throws {
+        let data = Data(
+            """
+            {
+              "versions": [
+                {
+                  "id": "version-id",
+                  "versionString": "2.1.0",
+                  "platform": "IOS",
+                  "appStoreState": "READY_FOR_SALE",
+                  "createdDate": "2026-08-16T23:45:24-07:00",
+                  "releaseType": "AFTER_APPROVAL",
+                  "earliestReleaseDate": null
+                }
+              ]
+            }
+            """.utf8
+        )
+
+        let response = try JSONDecoder().decode(AppStoreVersionsResponse.self, from: data)
+        let version = try #require(response.versions.first)
+
+        #expect(version.versionString == "2.1.0")
+        #expect(version.stateDisplayName == "可供销售")
+        #expect(version.releaseTypeDisplayName == "审核通过后")
+    }
+
+    @Test func appStoreVersionValidationAcceptsAppleNumericVersionFormat() {
+        #expect(AppStoreVersion.isValidVersionString("2.1.0"))
+        #expect(AppStoreVersion.isValidVersionString("2"))
+        #expect(!AppStoreVersion.isValidVersionString("2.beta"))
+        #expect(!AppStoreVersion.isValidVersionString("1.2.3.4"))
+    }
+
     private func makeImage(width: Int, height: Int, color: NSColor) -> NSImage {
         let bitmap = NSBitmapImageRep(
             bitmapDataPlanes: nil,

@@ -860,8 +860,19 @@ class AppStoreMetadataUploader:
                 ):
                     self._ensure_version_is_editable(item)
                     return item
+            available_versions = sorted(
+                {
+                    str(item.get('attributes', {}).get('versionString') or '未知版本')
+                    for item in target_versions
+                },
+                reverse=True,
+            )
+            available_text = ', '.join(available_versions) or '无'
             raise ValueError(
-                f'找不到 version_string={self._app_config.version_string} 的版本。',
+                f'找不到 version_string={self._app_config.version_string} 的 IOS 版本。'
+                f' 当前线上版本: {available_text}。'
+                ' 请先在 DevKit 的“版本管理”中确认版本已创建并刷新列表，'
+                '再执行本地化上传。',
             )
         editable_versions = [
             item

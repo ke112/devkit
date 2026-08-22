@@ -12,6 +12,7 @@ struct AppStoreReleaseView: View {
     @State private var exampleDocument: AppStoreConfigurationDocument?
     @State private var isImportLocaleMapValid = true
     @State private var isScreenshotDirectoryMapValid = true
+    @State private var isVersionManagerPresented = false
 
     var body: some View {
         HSplitView {
@@ -108,6 +109,9 @@ struct AppStoreReleaseView: View {
                 )
             }
         }
+        .sheet(isPresented: $isVersionManagerPresented) {
+            AppStoreVersionManagerView(model: model)
+        }
         .onChange(of: model.configurationRevision) {
             isImportLocaleMapValid = true
             isScreenshotDirectoryMapValid = true
@@ -141,7 +145,7 @@ struct AppStoreReleaseView: View {
                     isScreenshotDirectoryMapValid: $isScreenshotDirectoryMapValid
                 )
                 .id(model.configurationRevision)
-                .disabled(model.isRunning)
+                .disabled(model.isRunning || model.isVersionRequestRunning)
                 .padding(20)
             }
             .safeAreaInset(edge: .bottom) {
@@ -171,6 +175,9 @@ struct AppStoreReleaseView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("发版物料")
                         .font(.headline)
+                    Text(model.versionDisplayName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 Spacer()
@@ -181,6 +188,14 @@ struct AppStoreReleaseView: View {
                     Label("导入物料", systemImage: "tray.and.arrow.down")
                 }
                 .disabled(!canRun)
+
+                Button {
+                    isVersionManagerPresented = true
+                    model.loadVersions()
+                } label: {
+                    Label("版本管理", systemImage: "list.number")
+                }
+                .disabled(model.isRunning || model.isVersionRequestRunning)
 
                 Button {
                     isUploadConfirmationPresented = true
@@ -273,6 +288,7 @@ struct AppStoreReleaseView: View {
     private var canRun: Bool {
         model.configuration != nil
             && !model.isRunning
+            && !model.isVersionRequestRunning
             && isImportLocaleMapValid
             && isScreenshotDirectoryMapValid
     }
@@ -623,6 +639,160 @@ private struct AppStoreConfigurationExampleView: View {
     }
 }
 
+private struct AppStoreVersionManagerView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Bindable var model: AppStoreReleaseModel
+    @State private var isNewVersionPresented = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("App Store 版本")
+                        .font(.title2.bold())
+                }
+                Spacer()
+                Button {
+                    model.loadVersions()
+                } label: {
+                    Label("刷新", systemImage: "arrow.clockwise")
+                }
+                .disabled(model.isRunning || model.isVersionRequestRunning)
+                Button {
+                    isNewVersionPresented = true
+                } label: {
+                    Label("新增版本", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(model.isRunning || model.isVersionRequestRunning)
+                Button("关闭") {
+                    dismiss()
+                }
+            }
+            .padding(20)
+
+            Divider()
+
+            if model.appStoreVersions.isEmpty && model.isVersionRequestRunning {
+                ProgressView("正在读取 App Store Connect 版本")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if model.appStoreVersions.isEmpty {
+                ContentUnavailableView(
+                    "暂无版本数据",
+                    systemImage: "shippingbox",
+                    description: Text(model.versionRequestStatus)
+                )
+            } else {
+                Table(model.appStoreVersions) {
+                    TableColumn("版本") { version in
+                        HStack(spacing: 6) {
+                            Text(version.versionString)
+                                .fontWeight(version.versionString == model.configuration?.app.versionString ? .semibold : .regular)
+                            if version.versionString == model.configuration?.app.versionString {
+                                Text("当前")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    TableColumn("状态") { version in
+                        Label(version.stateDisplayName, systemImage: version.appStoreState == "READY_FOR_SALE" ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(version.appStoreState == "READY_FOR_SALE" ? .green : .secondary)
+                            .help(version.appStoreState)
+                    }
+                    TableColumn("发布方式") { version in
+                        Text(version.releaseTypeDisplayName)
+                    }
+                    TableColumn("创建时间") { version in
+                        Text(version.createdDateDisplayName)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(minHeight: 260)
+            }
+
+            Divider()
+            HStack {
+                Image(systemName: model.isVersionRequestRunning ? "arrow.triangle.2.circlepath" : "info.circle")
+                Text(model.versionRequestStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
+        }
+        .frame(minWidth: 860, minHeight: 520)
+        .sheet(isPresented: $isNewVersionPresented) {
+            NewAppStoreVersionView(
+                existingVersions: Set(model.appStoreVersions.map(\.versionString)),
+                onCreate: { versionString in
+                    model.createVersion(versionString)
+                    isNewVersionPresented = false
+                }
+            )
+        }
+    }
+}
+
+private struct NewAppStoreVersionView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var versionString: String
+    @State private var isConfirmationPresented = false
+
+    let onCreate: (String) -> Void
+
+    let existingVersions: Set<String>
+
+    init(existingVersions: Set<String>, onCreate: @escaping (String) -> Void) {
+        _versionString = State(initialValue: "")
+        self.existingVersions = existingVersions
+        self.onCreate = onCreate
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("新增 App Store 版本")
+                .font(.title2.bold())
+            TextField("版本号，例如 2.2.0", text: $versionString)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                Spacer()
+                Button("取消") {
+                    dismiss()
+                }
+                Button {
+                    isConfirmationPresented = true
+                } label: {
+                    Label("创建版本", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!isValidVersion)
+            }
+        }
+        .padding(24)
+        .frame(width: 440)
+        .confirmationDialog(
+            "确认创建版本 \(versionString.trimmingCharacters(in: .whitespacesAndNewlines))？",
+            isPresented: $isConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button("创建并刷新") {
+                onCreate(versionString.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("此操作会修改线上 App Store Connect 数据。")
+        }
+    }
+
+    private var isValidVersion: Bool {
+        let value = versionString.trimmingCharacters(in: .whitespacesAndNewlines)
+        return AppStoreVersion.isValidVersionString(value)
+            && !existingVersions.contains(value)
+    }
+}
+
 @MainActor
 @Observable
 private final class AppStoreReleaseModel {
@@ -672,6 +842,9 @@ private final class AppStoreReleaseModel {
     var alertMessage: String?
     var isFirstUse = false
     var configurationRevision = UUID()
+    var appStoreVersions: [AppStoreVersion] = []
+    var isVersionRequestRunning = false
+    var versionRequestStatus = "尚未读取 App Store Connect 版本"
 
     init(storageDirectoryURL: URL? = nil) {
         let resolvedStorageDirectory = storageDirectoryURL
@@ -712,7 +885,16 @@ private final class AppStoreReleaseModel {
         return locales.isEmpty ? "当前配置语种" : locales.joined(separator: "、")
     }
 
+    func loadVersions() {
+        runVersionRequest(command: "list", versionString: nil)
+    }
+
+    func createVersion(_ versionString: String) {
+        runVersionRequest(command: "create", versionString: versionString)
+    }
+
     func updateConfiguration(_ newValue: AppStoreReleaseConfiguration) {
+        resetVersionsIfContextChanged(from: configuration, to: newValue)
         configuration = AppStoreReleaseConfigurationFile.normalizedForApp(newValue)
         saveStatus = .saving
         saveConfiguration()
@@ -732,6 +914,8 @@ private final class AppStoreReleaseModel {
             )
             try AppStoreReleaseConfigurationFile.save(imported, to: configURL)
             configuration = imported
+            appStoreVersions = []
+            versionRequestStatus = "配置已更新，请重新读取 App Store Connect 版本。"
             configurationRevision = UUID()
             isFirstUse = false
             saveStatus = .saved
@@ -826,6 +1010,108 @@ private final class AppStoreReleaseModel {
                 alertMessage = error.localizedDescription
             }
         }
+    }
+
+    private func runVersionRequest(command: String, versionString: String?) {
+        guard !isVersionRequestRunning, !isRunning, configuration != nil else { return }
+        guard saveConfiguration() else { return }
+        guard let scriptURL = AppStoreReleaseConfigurationFile.scriptURL(named: "app_store_versions") else {
+            alertMessage = "App 内缺少脚本：app_store_versions.py"
+            return
+        }
+
+        isVersionRequestRunning = true
+        versionRequestStatus = command == "create" ? "正在创建 App Store 版本" : "正在读取 App Store Connect 版本"
+        operationStatus = versionRequestStatus
+        operationStatusSystemImage = "terminal"
+        output = ""
+        let outputURL = storageDirectoryURL.appending(path: "app_store_versions-\(UUID().uuidString).json")
+        var arguments = [
+            "-l",
+            "-c",
+            "exec python3 -B -u \"$@\"",
+            "devkit",
+            scriptURL.path,
+            "--config",
+            configURL.path,
+            "--output",
+            outputURL.path,
+            command,
+        ]
+        if let versionString {
+            arguments += ["--version-string", versionString]
+        }
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let status = try await StreamingProcess.run(
+                    executableURL: URL(fileURLWithPath: "/bin/zsh"),
+                    arguments: arguments,
+                    currentDirectoryURL: storageDirectoryURL
+                ) { chunk in
+                    Task { @MainActor [weak self] in
+                        self?.output.append(chunk)
+                    }
+                }
+                defer { try? FileManager.default.removeItem(at: outputURL) }
+                guard status == 0 else {
+                    isVersionRequestRunning = false
+                    versionRequestStatus = "版本操作失败，请查看执行日志。"
+                    operationStatus = "版本操作失败（退出码 \(status)）"
+                    operationStatusSystemImage = "xmark.circle"
+                    alertMessage = output.isEmpty ? "App Store Connect 版本操作失败。" : output
+                    return
+                }
+                let response = try JSONDecoder().decode(
+                    AppStoreVersionsResponse.self,
+                    from: Data(contentsOf: outputURL)
+                )
+                appStoreVersions = response.versions
+                if command == "create", let versionString {
+                    var updatedConfiguration = configuration
+                    updatedConfiguration?.app.versionString = versionString
+                    if let updatedConfiguration {
+                        configuration = AppStoreReleaseConfigurationFile.normalizedForApp(updatedConfiguration)
+                        _ = saveConfiguration()
+                    }
+                    versionRequestStatus = "版本 \(versionString) 已创建并设为当前上传目标。"
+                } else {
+                    versionRequestStatus = "已读取 \(response.versions.count) 个 iOS 版本。"
+                }
+                operationStatus = versionRequestStatus
+                operationStatusSystemImage = "checkmark.circle"
+                isVersionRequestRunning = false
+            } catch {
+                isVersionRequestRunning = false
+                versionRequestStatus = "版本操作失败。"
+                operationStatus = "版本操作失败"
+                operationStatusSystemImage = "xmark.circle"
+                alertMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func resetVersionsIfContextChanged(
+        from oldConfiguration: AppStoreReleaseConfiguration?,
+        to newConfiguration: AppStoreReleaseConfiguration
+    ) {
+        guard oldConfiguration.map(versionContext) != versionContext(newConfiguration) else {
+            return
+        }
+        appStoreVersions = []
+        versionRequestStatus = "配置已更新，请重新读取 App Store Connect 版本。"
+    }
+
+    private func versionContext(_ configuration: AppStoreReleaseConfiguration) -> [String] {
+        [
+            configuration.auth.issuerID,
+            configuration.auth.keyID,
+            configuration.auth.privateKeyPath,
+            configuration.app.appID,
+            configuration.app.bundleID,
+            configuration.app.platform,
+        ]
     }
 
     @discardableResult
