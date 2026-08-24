@@ -57,6 +57,14 @@ struct AppStoreVersion: Codable, Equatable, Identifiable {
                 options: .regularExpression
             ) != nil
     }
+
+    static func missingVersion(in output: String, expectedVersion: String) -> String? {
+        let version = expectedVersion.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !version.isEmpty, output.contains("找不到 version_string=\(version)") else {
+            return nil
+        }
+        return version
+    }
 }
 
 struct AppStoreVersionsResponse: Codable, Equatable {

@@ -457,6 +457,25 @@ struct DevKitTests {
         #expect(!AppStoreVersion.isValidVersionString("1.2.3.4"))
     }
 
+    @Test func appStoreVersionExtractsMissingExpectedVersionFromUploadFailure() {
+        let output = "{\"error\": \"找不到 version_string=2.3.0 的 IOS 版本。\"}"
+
+        #expect(AppStoreVersion.missingVersion(in: output, expectedVersion: "2.3.0") == "2.3.0")
+        #expect(AppStoreVersion.missingVersion(in: output, expectedVersion: "2.2.0") == nil)
+        #expect(AppStoreVersion.missingVersion(in: "认证失败", expectedVersion: "2.3.0") == nil)
+    }
+
+    @Test func streamingProcessReturnsCompleteOutput() async throws {
+        let result = try await StreamingProcess.run(
+            executableURL: URL(fileURLWithPath: "/bin/echo"),
+            arguments: ["missing-version-output"],
+            currentDirectoryURL: FileManager.default.temporaryDirectory
+        ) { _ in }
+
+        #expect(result.terminationStatus == 0)
+        #expect(result.output == "missing-version-output\n")
+    }
+
     private func makeImage(width: Int, height: Int, color: NSColor) -> NSImage {
         let bitmap = NSBitmapImageRep(
             bitmapDataPlanes: nil,

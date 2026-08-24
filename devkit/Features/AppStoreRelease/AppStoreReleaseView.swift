@@ -13,6 +13,7 @@ struct AppStoreReleaseView: View {
     @State private var isImportLocaleMapValid = true
     @State private var isScreenshotDirectoryMapValid = true
     @State private var isVersionManagerPresented = false
+    @State private var versionManagerInitialVersion = ""
 
     var body: some View {
         HSplitView {
@@ -110,7 +111,16 @@ struct AppStoreReleaseView: View {
             }
         }
         .sheet(isPresented: $isVersionManagerPresented) {
-            AppStoreVersionManagerView(model: model)
+            AppStoreVersionManagerView(
+                model: model,
+                initialVersionString: versionManagerInitialVersion
+            )
+        }
+        .onChange(of: model.versionCreationRequest) { _, newValue in
+            guard let newValue else { return }
+            versionManagerInitialVersion = newValue
+            model.versionCreationRequest = nil
+            isVersionManagerPresented = true
         }
         .onChange(of: model.configurationRevision) {
             isImportLocaleMapValid = true
@@ -190,6 +200,7 @@ struct AppStoreReleaseView: View {
                 .disabled(!canRun)
 
                 Button {
+                    versionManagerInitialVersion = ""
                     isVersionManagerPresented = true
                     model.loadVersions()
                 } label: {
@@ -642,7 +653,14 @@ private struct AppStoreConfigurationExampleView: View {
 private struct AppStoreVersionManagerView: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable var model: AppStoreReleaseModel
-    @State private var isNewVersionPresented = false
+    @State private var isNewVersionPresented: Bool
+    @State private var newVersionInitialValue: String
+
+    init(model: AppStoreReleaseModel, initialVersionString: String = "") {
+        self.model = model
+        _isNewVersionPresented = State(initialValue: !initialVersionString.isEmpty)
+        _newVersionInitialValue = State(initialValue: initialVersionString)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -659,6 +677,7 @@ private struct AppStoreVersionManagerView: View {
                 }
                 .disabled(model.isRunning || model.isVersionRequestRunning)
                 Button {
+                    newVersionInitialValue = ""
                     isNewVersionPresented = true
                 } label: {
                     Label("新增版本", systemImage: "plus")
@@ -726,6 +745,7 @@ private struct AppStoreVersionManagerView: View {
         .sheet(isPresented: $isNewVersionPresented) {
             NewAppStoreVersionView(
                 existingVersions: Set(model.appStoreVersions.map(\.versionString)),
+                initialVersionString: newVersionInitialValue,
                 onCreate: { versionString in
                     model.createVersion(versionString)
                     isNewVersionPresented = false
@@ -744,8 +764,12 @@ private struct NewAppStoreVersionView: View {
 
     let existingVersions: Set<String>
 
-    init(existingVersions: Set<String>, onCreate: @escaping (String) -> Void) {
-        _versionString = State(initialValue: "")
+    init(
+        existingVersions: Set<String>,
+        initialVersionString: String = "",
+        onCreate: @escaping (String) -> Void
+    ) {
+        _versionString = State(initialValue: initialVersionString)
         self.existingVersions = existingVersions
         self.onCreate = onCreate
     }
@@ -845,6 +869,7 @@ private final class AppStoreReleaseModel {
     var appStoreVersions: [AppStoreVersion] = []
     var isVersionRequestRunning = false
     var versionRequestStatus = "尚未读取 App Store Connect 版本"
+    var versionCreationRequest: String?
 
     init(storageDirectoryURL: URL? = nil) {
         let resolvedStorageDirectory = storageDirectoryURL
@@ -974,7 +999,7 @@ private final class AppStoreReleaseModel {
         Task { [weak self] in
             guard let self else { return }
             do {
-                let status = try await StreamingProcess.run(
+                let result = try await StreamingProcess.run(
                     executableURL: URL(fileURLWithPath: "/bin/zsh"),
                     arguments: [
                         "-l",
@@ -991,6 +1016,7 @@ private final class AppStoreReleaseModel {
                         self?.output.append(chunk)
                     }
                 }
+                let status = result.terminationStatus
                 isRunning = false
                 if status == 0 {
                     operationStatus = successTitle
@@ -1001,7 +1027,17 @@ private final class AppStoreReleaseModel {
                 } else {
                     operationStatus = "执行失败（退出码 \(status)）"
                     operationStatusSystemImage = "xmark.circle"
-                    alertMessage = "脚本执行失败，退出码 \(status)。请查看执行日志。"
+                    if scriptName == "upload_localizations",
+                       let expectedVersion = configuration?.app.versionString,
+                       let missingVersion = AppStoreVersion.missingVersion(
+                           in: result.output,
+                           expectedVersion: expectedVersion
+                       ) {
+                        versionCreationRequest = missingVersion
+                        versionRequestStatus = "线上缺少版本 \(missingVersion)，请先创建版本。"
+                    } else {
+                        alertMessage = "脚本执行失败，退出码 \(status)。请查看执行日志。"
+                    }
                 }
             } catch {
                 isRunning = false
@@ -1045,7 +1081,7 @@ private final class AppStoreReleaseModel {
         Task { [weak self] in
             guard let self else { return }
             do {
-                let status = try await StreamingProcess.run(
+                let result = try await StreamingProcess.run(
                     executableURL: URL(fileURLWithPath: "/bin/zsh"),
                     arguments: arguments,
                     currentDirectoryURL: storageDirectoryURL
@@ -1054,6 +1090,7 @@ private final class AppStoreReleaseModel {
                         self?.output.append(chunk)
                     }
                 }
+                let status = result.terminationStatus
                 defer { try? FileManager.default.removeItem(at: outputURL) }
                 guard status == 0 else {
                     isVersionRequestRunning = false
