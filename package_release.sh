@@ -7,6 +7,8 @@ BUILD_DIR="$ROOT_DIR/build"
 APP_PATH="$BUILD_DIR/$APP_NAME"
 ZIP_PATH="$BUILD_DIR/DevKit.zip"
 INSTALL_APP_PATH="/Applications/$APP_NAME"
+BUNDLE_IDENTIFIER="com.zhihua.devkit"
+XCODE_DERIVED_DATA_DIR="${HOME}/Library/Developer/Xcode/DerivedData"
 PACKAGE_DIR="$(mktemp -d /tmp/DevKitPackage.XXXXXX)"
 ARCHIVE_PATH="$PACKAGE_DIR/DevKit.xcarchive"
 ARCHIVED_APP_PATH="$ARCHIVE_PATH/Products/Applications/$APP_NAME"
@@ -15,6 +17,31 @@ cleanup() {
   rm -rf "$PACKAGE_DIR"
 }
 trap cleanup EXIT
+
+cleanup_non_installed_apps() {
+  local search_root app_path bundle_id
+
+  for search_root in "$ROOT_DIR" "$XCODE_DERIVED_DATA_DIR"; do
+    [[ -d "$search_root" ]] || continue
+    while IFS= read -r app_path; do
+      [[ -n "$app_path" ]] || continue
+      [[ "$app_path" == "$INSTALL_APP_PATH" ]] && continue
+      [[ -f "$app_path/Contents/Info.plist" ]] || continue
+
+      bundle_id=$(
+        /usr/libexec/PlistBuddy \
+          -c 'Print :CFBundleIdentifier' \
+          "$app_path/Contents/Info.plist" 2>/dev/null || true
+      )
+      [[ "$bundle_id" == "$BUNDLE_IDENTIFIER" ]] || continue
+
+      rm -rf "$app_path"
+      echo "Removed non-installed app: $app_path"
+    done < <(
+      find "$search_root" -type d -name "$APP_NAME" -prune -print 2>/dev/null
+    )
+  done
+}
 
 if [[ "$APP_PATH" != "$ROOT_DIR/build/DevKit.app" || "$INSTALL_APP_PATH" != "/Applications/DevKit.app" ]]; then
   echo "Unexpected DevKit package path." >&2
@@ -65,6 +92,8 @@ fi
 codesign --verify --deep --strict "$APP_PATH"
 codesign --verify --deep --strict "$INSTALL_APP_PATH"
 
-echo "Repository app: $APP_PATH"
+cleanup_non_installed_apps
+
+echo "Repository app: removed after install"
 echo "Repository zip: $ZIP_PATH"
 echo "Installed app: $INSTALL_APP_PATH"

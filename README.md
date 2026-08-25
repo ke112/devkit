@@ -75,11 +75,12 @@ xcodebuild test \
 
 ## 打包与安装
 
-package_release.sh 会归档并校验 Release 应用，生成以下产物：
+package_release.sh 会归档并校验 Release 应用，生成并保留以下产物：
 
-- build/DevKit.app
 - build/DevKit.zip
 - /Applications/DevKit.app
+
+打包完成并校验安装版后，脚本会删除项目目录和 Xcode DerivedData 中 Bundle ID 为 `com.zhihua.devkit` 的其他 `DevKit.app`，只保留 `/Applications/DevKit.app`。
 
 执行：
 
