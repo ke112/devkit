@@ -239,6 +239,7 @@ struct DevKitTests {
             HomeFeatureSetting(feature: .imageOverlay, isVisible: false),
             HomeFeatureSetting(feature: .simulatorManagement, isVisible: true),
             HomeFeatureSetting(feature: .appStoreRelease, isVisible: true),
+            HomeFeatureSetting(feature: .tinyPNG, isVisible: true),
         ])
     }
 
@@ -252,6 +253,7 @@ struct DevKitTests {
             HomeFeatureSetting(feature: .imageOverlay, isVisible: false),
             HomeFeatureSetting(feature: .simulatorManagement, isVisible: true),
             HomeFeatureSetting(feature: .appStoreRelease, isVisible: true),
+            HomeFeatureSetting(feature: .tinyPNG, isVisible: true),
         ])
     }
 
@@ -264,8 +266,114 @@ struct DevKitTests {
 
         #expect(
             settings.map(\.feature)
-                == [.imageOverlay, .simulatorManagement, .appStoreRelease]
+                == [.imageOverlay, .simulatorManagement, .appStoreRelease, .tinyPNG]
         )
+    }
+
+    @Test func tinyPNGScannerRejectsOnlyImagesAboveTheFiveMBLimit() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "DevKitTests-TinyPNG-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let limit = Int(TinyPNGInputScanner.maxUploadBytes)
+        try Data(repeating: 0, count: limit - 1)
+            .write(to: directory.appending(path: "below.png"))
+        try Data(repeating: 0, count: limit)
+            .write(to: directory.appending(path: "equal.jpg"))
+        try Data(repeating: 0, count: limit + 1)
+            .write(to: directory.appending(path: "above.webp"))
+
+        #expect(
+            TinyPNGInputScanner.summary(for: directory)
+                == TinyPNGSelectionSummary(imageCount: 3, oversizedCount: 1)
+        )
+    }
+
+    @Test func tinyPNGDefaultsToReplacingOriginals() {
+        let model = TinyPNGModel()
+
+        #expect(model.replaceOriginals)
+    }
+
+    @Test func tinyPNGFolderScanCanRunOffTheMainActor() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "DevKitTests-TinyPNG-Background-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        for index in 0..<512 {
+            try Data([UInt8(index % 255)])
+                .write(to: directory.appending(path: "image-\(index).png"))
+        }
+
+        let result = await Task.detached(priority: .userInitiated) {
+            TinyPNGInputScanner.scan(directory)
+        }.value
+
+        #expect(result.summary == TinyPNGSelectionSummary(imageCount: 512, oversizedCount: 0))
+    }
+
+    @Test func tinyPNGProgressCountsCompletedAndSkippedImages() {
+        let model = TinyPNGModel()
+        model.selectionSummary = TinyPNGSelectionSummary(imageCount: 4, oversizedCount: 1)
+        model.imageItems = [
+            TinyPNGImageItem(
+                id: URL(fileURLWithPath: "/tmp/one.png"),
+                relativePath: "one.png",
+                byteCount: 1,
+                status: .success
+            ),
+            TinyPNGImageItem(
+                id: URL(fileURLWithPath: "/tmp/two.png"),
+                relativePath: "two.png",
+                byteCount: 1,
+                status: .skipped
+            ),
+            TinyPNGImageItem(
+                id: URL(fileURLWithPath: "/tmp/three.png"),
+                relativePath: "three.png",
+                byteCount: 1,
+                status: .uploading
+            ),
+            TinyPNGImageItem(
+                id: URL(fileURLWithPath: "/tmp/four.png"),
+                relativePath: "four.png",
+                byteCount: 1,
+                status: .waiting
+            ),
+        ]
+
+        #expect(model.completedImageCount == 2)
+        #expect(model.completionPercentage == 50)
+    }
+
+    @Test func tinyPNGCompressionStatsReportTotalReduction() {
+        let model = TinyPNGModel()
+        model.imageItems = [
+            TinyPNGImageItem(
+                id: URL(fileURLWithPath: "/tmp/one.png"),
+                relativePath: "one.png",
+                byteCount: 1_000,
+                status: .success,
+                compressedByteCount: 700,
+                compressionPercentage: 30
+            ),
+            TinyPNGImageItem(
+                id: URL(fileURLWithPath: "/tmp/two.png"),
+                relativePath: "two.png",
+                byteCount: 3_000,
+                status: .success,
+                compressedByteCount: 1_500,
+                compressionPercentage: 50
+            ),
+        ]
+
+        let stats = model.compressionStats
+
+        #expect(stats?.beforeBytes == 4_000)
+        #expect(stats?.afterBytes == 2_200)
+        #expect(stats?.savedPercentage == 45)
     }
 
     @Test func appStoreReleaseConfigurationPreservesEveryField() throws {
@@ -474,6 +582,25 @@ struct DevKitTests {
 
         #expect(result.terminationStatus == 0)
         #expect(result.output == "missing-version-output\n")
+    }
+
+    @Test func streamingProcessCancellationTerminatesChildProcess() async throws {
+        let cancellation = StreamingProcessCancellation()
+        let task = Task {
+            try await StreamingProcess.run(
+                executableURL: URL(fileURLWithPath: "/bin/sleep"),
+                arguments: ["5"],
+                currentDirectoryURL: FileManager.default.temporaryDirectory,
+                cancellation: cancellation,
+                onOutput: { _ in }
+            )
+        }
+
+        try await Task.sleep(nanoseconds: 100_000_000)
+        cancellation.cancel()
+        let result = try await task.value
+
+        #expect(result.terminationStatus != 0)
     }
 
     private func makeImage(width: Int, height: Int, color: NSColor) -> NSImage {

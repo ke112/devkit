@@ -6,6 +6,12 @@
 - Keep changes limited to the requested feature or bug. Do not refactor unrelated simulator or image-processing code.
 - Follow the existing language and naming style in each file.
 
+## Scripts
+
+- Reusable automation and command workflows must live in standalone script files so they can be exported and run independently later. Use `*.py` for Python scripts and `*.sh` for shell scripts.
+- Do not embed multi-step Python or shell workflows inside Swift or other source files. A `Process` invocation may remain in application code only as a thin launcher for a standalone script or a single system command.
+- Standalone scripts must keep their own entry point, arguments, and usage/help text; do not hide script logic in UI callbacks or build configuration strings.
+
 ## Safety
 
 - Simulator reset, delete, recreate, and Runtime removal are destructive operations.

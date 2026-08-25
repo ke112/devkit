@@ -55,6 +55,8 @@ struct ContentView: View {
                     ImageOverlayView()
                 case .appStoreRelease:
                     AppStoreReleaseView()
+                case .tinyPNG:
+                    TinyPNGView()
                 }
             }
         }
@@ -73,6 +75,7 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
     case simulatorManagement
     case imageOverlay
     case appStoreRelease
+    case tinyPNG
 
     var id: Self { self }
 
@@ -84,6 +87,8 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
             "图片叠加"
         case .appStoreRelease:
             "iOS App 发版"
+        case .tinyPNG:
+            "TinyPNG 图片压缩"
         }
     }
 
@@ -95,6 +100,8 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
             "square.stack.3d.up"
         case .appStoreRelease:
             "shippingbox.and.arrow.backward"
+        case .tinyPNG:
+            "arrow.down.circle"
         }
     }
 }
