@@ -57,6 +57,8 @@ struct ContentView: View {
                     AppStoreReleaseView()
                 case .tinyPNG:
                     TinyPNGView()
+                case .webPConversion:
+                    WebPConversionView()
                 }
             }
         }
@@ -76,6 +78,7 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
     case imageOverlay
     case appStoreRelease
     case tinyPNG
+    case webPConversion
 
     var id: Self { self }
 
@@ -89,6 +92,8 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
             "iOS App 发版"
         case .tinyPNG:
             "TinyPNG 图片压缩"
+        case .webPConversion:
+            "WebP 图片转换"
         }
     }
 
@@ -102,6 +107,8 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
             "shippingbox.and.arrow.backward"
         case .tinyPNG:
             "arrow.down.circle"
+        case .webPConversion:
+            "photo.badge.arrow.down"
         }
     }
 }

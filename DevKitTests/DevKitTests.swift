@@ -240,6 +240,7 @@ struct DevKitTests {
             HomeFeatureSetting(feature: .simulatorManagement, isVisible: true),
             HomeFeatureSetting(feature: .appStoreRelease, isVisible: true),
             HomeFeatureSetting(feature: .tinyPNG, isVisible: true),
+            HomeFeatureSetting(feature: .webPConversion, isVisible: true),
         ])
     }
 
@@ -254,6 +255,7 @@ struct DevKitTests {
             HomeFeatureSetting(feature: .simulatorManagement, isVisible: true),
             HomeFeatureSetting(feature: .appStoreRelease, isVisible: true),
             HomeFeatureSetting(feature: .tinyPNG, isVisible: true),
+            HomeFeatureSetting(feature: .webPConversion, isVisible: true),
         ])
     }
 
@@ -266,7 +268,7 @@ struct DevKitTests {
 
         #expect(
             settings.map(\.feature)
-                == [.imageOverlay, .simulatorManagement, .appStoreRelease, .tinyPNG]
+                == [.imageOverlay, .simulatorManagement, .appStoreRelease, .tinyPNG, .webPConversion]
         )
     }
 
@@ -428,6 +430,136 @@ struct DevKitTests {
         #expect(stats?.beforeBytes == 4_000)
         #expect(stats?.afterBytes == 2_200)
         #expect(stats?.savedPercentage == 45)
+    }
+
+    @Test func webPScannerCollectsSupportedImagesAndTagsWebPSources() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "DevKitTests-WebP-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        for name in ["photo.png", "photo.jpg", "capture.heic", "frame.gif", "icon.webp", "notes.txt"] {
+            try Data([0x00]).write(to: directory.appending(path: name))
+        }
+        try FileManager.default.createDirectory(
+            at: directory.appending(path: "nested", directoryHint: .isDirectory),
+            withIntermediateDirectories: true
+        )
+        try Data([0x00]).write(to: directory.appending(path: "nested/deep.tiff"))
+
+        let result = WebPInputScanner.scan(directory)
+
+        #expect(result.images.count == 6)
+        #expect(result.images.filter(\.isWebP).map(\.url.lastPathComponent) == ["icon.webp"])
+        #expect(WebPInputScanner.accepts(directory))
+        #expect(WebPInputScanner.accepts(directory.appending(path: "photo.png")))
+        #expect(!WebPInputScanner.accepts(directory.appending(path: "notes.txt")))
+        #expect(!WebPInputScanner.accepts(directory.appending(path: "missing.png")))
+    }
+
+    @Test func webPModelPersistsQualityAndNormalizesBounds() throws {
+        let suiteName = "DevKitTests-WebP-Preferences-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let model = WebPConversionModel(preferencesDefaults: defaults)
+
+        #expect(model.quality == 80)
+        #expect(model.minimumCompressionSizeKB == 100)
+        #expect(model.maximumSideLength == 0)
+        #expect(model.replaceOriginals)
+
+        model.quality = 150
+        #expect(model.quality == 100)
+        model.quality = 0
+        #expect(model.quality == 1)
+        model.quality = 75
+        model.maximumSideLength = 1024
+        model.minimumCompressionSizeKB = -5
+        #expect(model.minimumCompressionSizeKB == 0)
+
+        let restored = WebPConversionModel(preferencesDefaults: defaults)
+        #expect(restored.quality == 75)
+        #expect(restored.maximumSideLength == 1024)
+    }
+
+    @Test func webPMinimumSizeChangeRefreshesWaitingItemsButKeepsWebPSkipped() throws {
+        let suiteName = "DevKitTests-WebP-Refresh-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let model = WebPConversionModel(preferencesDefaults: defaults)
+        let minimumBytes = Int64(100 * 1024)
+        model.imageItems = [
+            WebPImageItem(
+                id: URL(fileURLWithPath: "/tmp/below.png"),
+                relativePath: "below.png",
+                byteCount: minimumBytes - 1,
+                status: .waiting
+            ),
+            WebPImageItem(
+                id: URL(fileURLWithPath: "/tmp/equal.png"),
+                relativePath: "equal.png",
+                byteCount: minimumBytes,
+                status: .waiting
+            ),
+            WebPImageItem(
+                id: URL(fileURLWithPath: "/tmp/existing.webp"),
+                relativePath: "existing.webp",
+                byteCount: minimumBytes * 10,
+                status: .skipped
+            ),
+        ]
+
+        model.minimumCompressionSizeKB = 100
+
+        #expect(model.imageItems[0].status == .skipped)
+        #expect(model.imageItems[1].status == .waiting)
+        #expect(model.imageItems[2].status == .skipped)
+        #expect(model.selectionSummary == WebPSelectionSummary(imageCount: 3, alreadyWebPCount: 1, belowMinimumCount: 1))
+    }
+
+    @Test func webPProgressAndStatsCountSkippedImagesAsUnchanged() {
+        let model = WebPConversionModel()
+        model.imageItems = [
+            WebPImageItem(
+                id: URL(fileURLWithPath: "/tmp/one.png"),
+                relativePath: "one.png",
+                byteCount: 1_000,
+                status: .success,
+                convertedByteCount: 600,
+                conversionPercentage: 40
+            ),
+            WebPImageItem(
+                id: URL(fileURLWithPath: "/tmp/two.gif"),
+                relativePath: "two.gif",
+                byteCount: 2_000,
+                status: .skipped,
+                convertedByteCount: 2_000,
+                conversionPercentage: 0
+            ),
+            WebPImageItem(
+                id: URL(fileURLWithPath: "/tmp/three.jpg"),
+                relativePath: "three.jpg",
+                byteCount: 1_000,
+                status: .converting
+            ),
+        ]
+
+        #expect(model.completedImageCount == 2)
+        #expect(model.completionPercentage == 67)
+        #expect(model.conversionStats == nil)
+
+        model.imageItems[2].status = .success
+        model.imageItems[2].convertedByteCount = 300
+        model.imageItems[2].conversionPercentage = 70
+
+        let stats = model.conversionStats
+        #expect(stats?.beforeBytes == 4_000)
+        #expect(stats?.afterBytes == 2_900)
+        #expect(abs((stats?.savedPercentage ?? 0) - 27.5) < 0.001)
     }
 
     @Test func appStoreReleaseConfigurationPreservesEveryField() throws {
