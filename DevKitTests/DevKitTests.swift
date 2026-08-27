@@ -580,6 +580,118 @@ struct DevKitTests {
         #expect(result.terminationStatus == 0 || result.terminationStatus == 1)
     }
 
+    @Test func defaultTopTransformAlignsTopImageWithBottomCanvasForSameAspectScreenshots() {
+        let bottomSize = ImagePixelSize(width: 1_086, height: 2_360)
+        let topSize = ImagePixelSize(width: 1_206, height: 2_622)
+
+        let transform = CompositeImageRenderer.defaultTopTransform(
+            bottomSize: bottomSize,
+            bottomBackingScale: 3,
+            topSize: topSize,
+            topBackingScale: 3
+        )
+
+        #expect(transform.scale == min(
+            CGFloat(bottomSize.width) / CGFloat(topSize.width),
+            CGFloat(bottomSize.height) / CGFloat(topSize.height)
+        ))
+        #expect(transform.offset == .zero)
+
+        let layout = CompositeImageRenderer.layout(
+            bottomSize: bottomSize,
+            bottomBackingScale: 3,
+            topSize: topSize,
+            topBackingScale: 3,
+            transform: transform
+        )
+
+        #expect(layout.pixelSize == bottomSize)
+    }
+
+    @Test func defaultTopTransformKeepsNativeScaleForIdenticalImages() {
+        let transform = CompositeImageRenderer.defaultTopTransform(
+            bottomSize: ImagePixelSize(width: 1_206, height: 2_622),
+            bottomBackingScale: 3,
+            topSize: ImagePixelSize(width: 1_206, height: 2_622),
+            topBackingScale: 3
+        )
+
+        #expect(transform == TopImageTransform())
+    }
+
+    @Test func imageOverlayExportFilenameUsesComparisonPrefixAndTimestamp() {
+        var components = DateComponents()
+        components.year = 2026
+        components.month = 8
+        components.day = 28
+        components.hour = 0
+        components.minute = 40
+        components.second = 51
+
+        let date = Calendar.current.date(from: components)!
+
+        #expect(ImageOverlayExportName.make(for: date) == "图片对比效果-20260828-004051")
+    }
+
+    @Test func edgeAlignmentDetectsFlushRightAndBottomEdges() {
+        let layout = CompositeImageRenderer.layout(
+            bottomSize: ImagePixelSize(width: 100, height: 80),
+            bottomBackingScale: 1,
+            topSize: ImagePixelSize(width: 50, height: 50),
+            topBackingScale: 1,
+            transform: TopImageTransform(offset: CGSize(width: 25, height: 15))
+        )
+
+        let alignment = CompositeImageRenderer.edgeAlignment(of: layout, tolerance: 0.5)
+
+        #expect(alignment.right)
+        #expect(alignment.bottom)
+        #expect(!alignment.left)
+        #expect(!alignment.top)
+        #expect(alignment.isAligned)
+    }
+
+    @Test func edgeAlignmentRejectsOffsetEdgesWithinTolerance() {
+        let layout = CompositeImageRenderer.layout(
+            bottomSize: ImagePixelSize(width: 100, height: 80),
+            bottomBackingScale: 1,
+            topSize: ImagePixelSize(width: 50, height: 50),
+            topBackingScale: 1,
+            transform: TopImageTransform(offset: CGSize(width: 8, height: 8))
+        )
+
+        #expect(
+            CompositeImageRenderer.edgeAlignment(of: layout, tolerance: 0.5)
+                == CompositeEdgeAlignment(left: false, right: false, top: false, bottom: false)
+        )
+        #expect(
+            CompositeImageRenderer.edgeAlignment(of: layout, tolerance: 20).isAligned
+        )
+    }
+
+    @Test func edgeAlignmentMatchesEveryEdgeWhenImagesFullyAlign() {
+        let bottomSize = ImagePixelSize(width: 1_086, height: 2_360)
+        let topSize = ImagePixelSize(width: 1_206, height: 2_622)
+        let transform = CompositeImageRenderer.defaultTopTransform(
+            bottomSize: bottomSize,
+            bottomBackingScale: 3,
+            topSize: topSize,
+            topBackingScale: 3
+        )
+        let layout = CompositeImageRenderer.layout(
+            bottomSize: bottomSize,
+            bottomBackingScale: 3,
+            topSize: topSize,
+            topBackingScale: 3,
+            transform: transform
+        )
+
+        #expect(
+            CompositeImageRenderer.edgeAlignment(of: layout, tolerance: 0.5)
+                == CompositeEdgeAlignment(left: true, right: true, top: true, bottom: true)
+        )
+    }
+
     @Test func appStoreReleaseConfigurationPreservesEveryField() throws {
         let data = Data(
             """

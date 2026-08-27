@@ -337,7 +337,7 @@ private struct CompositePreview: View {
     @Environment(\.dismiss) private var dismiss
     @FocusState private var isCanvasFocused: Bool
     @State private var topImageOpacity = 50.0
-    @State private var topTransform = TopImageTransform()
+    @State private var topTransform: TopImageTransform
     @State private var bottomBackingScale: ImageBackingScale
     @State private var topBackingScale: ImageBackingScale
     @State private var previewSize = CGSize.zero
@@ -383,6 +383,25 @@ private struct CompositePreview: View {
         self.detectedTopBackingScale = detectedTopBackingScale
         _bottomBackingScale = State(initialValue: detectedBottomBackingScale)
         _topBackingScale = State(initialValue: detectedTopBackingScale)
+        _topTransform = State(
+            initialValue: CompositeImageRenderer.defaultTopTransform(
+                bottomSize: bottomPixelSize,
+                bottomBackingScale: detectedBottomBackingScale.value,
+                topSize: topPixelSize,
+                topBackingScale: detectedTopBackingScale.value
+            )
+        )
+    }
+
+    private var defaultTopTransform: TopImageTransform {
+        var transform = CompositeImageRenderer.defaultTopTransform(
+            bottomSize: bottomPixelSize,
+            bottomBackingScale: bottomBackingScale.value,
+            topSize: topPixelSize,
+            topBackingScale: topBackingScale.value
+        )
+        transform.scale = clampedTopScale(transform.scale)
+        return transform
     }
 
     private var compositeLayout: CompositeImageLayout {
@@ -694,6 +713,11 @@ private struct CompositePreview: View {
             x: bottomCenter.x + topCenterOffset.width * displayScale,
             y: bottomCenter.y + topCenterOffset.height * displayScale
         )
+        let edgeAlignment = CompositeImageRenderer.edgeAlignment(
+            of: compositeLayout,
+            tolerance: alignmentTolerance
+        )
+        let alignmentColor = Color.green
 
         return ZStack {
             Color(nsColor: .windowBackgroundColor)
@@ -702,7 +726,10 @@ private struct CompositePreview: View {
                 .fill(.clear)
                 .overlay {
                     Rectangle()
-                        .stroke(Color.primary.opacity(0.35), lineWidth: 1)
+                        .stroke(
+                            edgeAlignment.isAligned ? alignmentColor : Color.primary.opacity(0.35),
+                            lineWidth: 1
+                        )
                 }
                 .frame(
                     width: compositeLayout.logicalBounds.width * displayScale,
@@ -728,6 +755,12 @@ private struct CompositePreview: View {
                 .position(topCenter)
                 .opacity(topImageOpacity / 100)
                 .accessibilityLabel("上层图片")
+
+            alignmentGuides(
+                alignment: edgeAlignment,
+                color: alignmentColor,
+                bottomCenter: bottomCenter
+            )
         }
         .contentShape(Rectangle())
         .clipped()
@@ -753,6 +786,70 @@ private struct CompositePreview: View {
         .onChange(of: isCanvasFocused) { _, isFocused in
             if !isFocused {
                 isSpacePressed = false
+            }
+        }
+    }
+
+    private var alignmentTolerance: CGFloat {
+        // 以屏幕像素为准（约 2px），不同缩放级别下对齐手感一致
+        displayScale > 0 ? 2 / displayScale : 2
+    }
+
+    @ViewBuilder
+    private func alignmentGuides(
+        alignment: CompositeEdgeAlignment,
+        color: Color,
+        bottomCenter: CGPoint
+    ) -> some View {
+        if alignment.isAligned {
+            let layout = compositeLayout
+            let unionRect = layout.topRect.union(layout.bottomRect)
+            let scaleX = displayScale
+            let guideThickness: CGFloat = 1
+            let leftGuide = CGPoint(
+                x: bottomCenter.x + (layout.bottomRect.minX - layout.bottomRect.midX) * scaleX,
+                y: bottomCenter.y + (unionRect.midY - layout.bottomRect.midY) * scaleX
+            )
+            let rightGuide = CGPoint(
+                x: bottomCenter.x + (layout.bottomRect.maxX - layout.bottomRect.midX) * scaleX,
+                y: bottomCenter.y + (unionRect.midY - layout.bottomRect.midY) * scaleX
+            )
+            let topGuide = CGPoint(
+                x: bottomCenter.x + (unionRect.midX - layout.bottomRect.midX) * scaleX,
+                y: bottomCenter.y + (layout.bottomRect.minY - layout.bottomRect.midY) * scaleX
+            )
+            let bottomGuide = CGPoint(
+                x: bottomCenter.x + (unionRect.midX - layout.bottomRect.midX) * scaleX,
+                y: bottomCenter.y + (layout.bottomRect.maxY - layout.bottomRect.midY) * scaleX
+            )
+
+            if alignment.left {
+                Rectangle()
+                    .fill(color)
+                    .frame(width: guideThickness)
+                    .frame(height: unionRect.height * scaleX)
+                    .position(leftGuide)
+            }
+            if alignment.right {
+                Rectangle()
+                    .fill(color)
+                    .frame(width: guideThickness)
+                    .frame(height: unionRect.height * scaleX)
+                    .position(rightGuide)
+            }
+            if alignment.top {
+                Rectangle()
+                    .fill(color)
+                    .frame(height: guideThickness)
+                    .frame(width: unionRect.width * scaleX)
+                    .position(topGuide)
+            }
+            if alignment.bottom {
+                Rectangle()
+                    .fill(color)
+                    .frame(height: guideThickness)
+                    .frame(width: unionRect.width * scaleX)
+                    .position(bottomGuide)
             }
         }
     }
@@ -912,7 +1009,7 @@ private struct CompositePreview: View {
 
     private func resetTopTransform() {
         withAnimation(.easeInOut(duration: 0.2)) {
-            topTransform = TopImageTransform()
+            topTransform = defaultTopTransform
         }
     }
 
@@ -1018,13 +1115,7 @@ private struct CompositePreview: View {
                 topBackingScale: topBackingScale.value,
                 transform: topTransform
             )
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.calendar = Calendar(identifier: .gregorian)
-            formatter.dateFormat = "yyyyMMdd-HHmmss-SSS"
-
-            let name = (bottomImage.name as NSString).deletingPathExtension
-            exportFilename = "\(name)-叠加-\(formatter.string(from: Date()))"
+            exportFilename = ImageOverlayExportName.make(for: Date())
             exportDocument = PNGFileDocument(data: data)
             isExporterPresented = true
         } catch {
@@ -1112,6 +1203,16 @@ private final class WindowGroupDragView: NSView {
 private struct ImportedImage {
     let name: String
     let image: NSImage
+}
+
+enum ImageOverlayExportName {
+    static func make(for date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return "图片对比效果-\(formatter.string(from: date))"
+    }
 }
 
 private enum ImageLayer {

@@ -64,6 +64,17 @@ struct CompositeImageLayout: Equatable {
     }
 }
 
+struct CompositeEdgeAlignment: Equatable {
+    let left: Bool
+    let right: Bool
+    let top: Bool
+    let bottom: Bool
+
+    var isAligned: Bool {
+        left || right || top || bottom
+    }
+}
+
 enum CompositeImageOutputLimits {
     static let maximumDimension = 16_384
     static let maximumPixelCount = 64_000_000
@@ -181,9 +192,11 @@ enum CompositeImageRenderer {
                 height: CGFloat(bottomSize.height) / bottomBackingScale
             )
         )
+        let scaledTopWidth = CGFloat(topSize.width) / topBackingScale * transform.scale
+        let scaledTopHeight = CGFloat(topSize.height) / topBackingScale * transform.scale
         let topSize = CGSize(
-            width: max(1 / outputScale, CGFloat(topSize.width) / topBackingScale * transform.scale),
-            height: max(1 / outputScale, CGFloat(topSize.height) / topBackingScale * transform.scale)
+            width: max(1 / outputScale, quantized(scaledTopWidth, scale: outputScale)),
+            height: max(1 / outputScale, quantized(scaledTopHeight, scale: outputScale))
         )
         let topRect = CGRect(
             x: quantized(
@@ -213,6 +226,45 @@ enum CompositeImageRenderer {
             topRect: topRect,
             outputScale: outputScale
         )
+    }
+
+    static func edgeAlignment(
+        of layout: CompositeImageLayout,
+        tolerance: CGFloat
+    ) -> CompositeEdgeAlignment {
+        let topRect = layout.topRect
+        let bottomRect = layout.bottomRect
+
+        func isClose(_ lhs: CGFloat, _ rhs: CGFloat) -> Bool {
+            abs(lhs - rhs) <= tolerance
+        }
+
+        return CompositeEdgeAlignment(
+            left: isClose(topRect.minX, bottomRect.minX),
+            right: isClose(topRect.maxX, bottomRect.maxX),
+            top: isClose(topRect.minY, bottomRect.minY),
+            bottom: isClose(topRect.maxY, bottomRect.maxY)
+        )
+    }
+
+    static func defaultTopTransform(
+        bottomSize: ImagePixelSize,
+        bottomBackingScale: CGFloat,
+        topSize: ImagePixelSize,
+        topBackingScale: CGFloat
+    ) -> TopImageTransform {
+        let bottomBackingScale = max(0.01, bottomBackingScale)
+        let topBackingScale = max(0.01, topBackingScale)
+        let bottomWidth = CGFloat(bottomSize.width) / bottomBackingScale
+        let bottomHeight = CGFloat(bottomSize.height) / bottomBackingScale
+        let topWidth = CGFloat(topSize.width) / topBackingScale
+        let topHeight = CGFloat(topSize.height) / topBackingScale
+        guard bottomWidth > 0, bottomHeight > 0, topWidth > 0, topHeight > 0 else {
+            return TopImageTransform()
+        }
+        // 取宽/高缩放比的较小者：宽高比一致时上层与底图严丝合缝；
+        // 比例略有偏差时上层完全落入底图，画布保持等于底图。
+        return TopImageTransform(scale: min(bottomWidth / topWidth, bottomHeight / topHeight))
     }
 
     static func pngData(
