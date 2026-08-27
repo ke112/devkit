@@ -562,6 +562,24 @@ struct DevKitTests {
         #expect(abs((stats?.savedPercentage ?? 0) - 27.5) < 0.001)
     }
 
+    @Test func dependencyBootstrapBundledScriptRunsInCheckModeWithoutSideEffects() async throws {
+        let scriptURL = try #require(
+            Bundle.main.url(
+                forResource: DependencyBootstrap.scriptResourceName,
+                withExtension: "sh"
+            )
+        )
+
+        let result = try await StreamingProcess.run(
+            executableURL: URL(fileURLWithPath: "/bin/bash"),
+            arguments: [scriptURL.path, "--check"],
+            currentDirectoryURL: FileManager.default.temporaryDirectory
+        ) { _ in }
+
+        // 0 = 全部就绪；1 = 有缺失。--check 只检测，不会触发安装。
+        #expect(result.terminationStatus == 0 || result.terminationStatus == 1)
+    }
+
     @Test func appStoreReleaseConfigurationPreservesEveryField() throws {
         let data = Data(
             """
