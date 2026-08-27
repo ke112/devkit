@@ -28,6 +28,17 @@ _Avoid_: Output bounds, bottom-image size, fixed canvas
 The visible workspace through which the output canvas is inspected. Panning or zooming the viewport never changes the exported image.
 _Avoid_: Output canvas, image transform
 
+# TinyPNG
+
+**Minimum compression size**:
+The configured lower bound for source image file size. Images smaller than this bound are skipped and are never uploaded to TinyPNG. The default is 100 KB.
+
+**Upload limit**:
+The TinyPNG single-file upper bound of 5 MB. Images above this bound are skipped regardless of the minimum compression size.
+
+**Skipped image**:
+An image excluded before upload because it is below the minimum compression size or above the upload limit. In output-folder mode its original bytes are preserved; in replacement mode the source remains unchanged.
+
 **Top-image hit area**:
 The top image's displayed rectangular frame, including transparent pixels. A gesture that begins inside this area edits the top image; a gesture that begins elsewhere navigates the preview viewport.
 _Avoid_: Opaque pixels, selected layer

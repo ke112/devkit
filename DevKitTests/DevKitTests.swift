@@ -290,6 +290,57 @@ struct DevKitTests {
         )
     }
 
+    @Test func tinyPNGMinimumCompressionSizeUsesStrictlyLessThanBoundary() {
+        let minimumBytes = Int64(100 * 1024)
+        let result = TinyPNGScanResult(images: [
+            TinyPNGScannedImage(url: URL(fileURLWithPath: "/tmp/below.png"), byteCount: minimumBytes - 1),
+            TinyPNGScannedImage(url: URL(fileURLWithPath: "/tmp/equal.png"), byteCount: minimumBytes),
+            TinyPNGScannedImage(url: URL(fileURLWithPath: "/tmp/above.png"), byteCount: minimumBytes + 1),
+        ])
+
+        let summary = result.summary(minimumCompressionBytes: minimumBytes)
+
+        #expect(summary.belowMinimumCount == 1)
+        #expect(summary.oversizedCount == 0)
+    }
+
+    @Test func tinyPNGMinimumCompressionSizePersistsLocallyAndRefreshesWaitingItems() throws {
+        let suiteName = "DevKitTests-TinyPNG-Preferences-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let model = TinyPNGModel(preferencesDefaults: defaults)
+        let minimumBytes = Int64(100 * 1024)
+        model.imageItems = [
+            TinyPNGImageItem(
+                id: URL(fileURLWithPath: "/tmp/below.png"),
+                relativePath: "below.png",
+                byteCount: minimumBytes - 1,
+                status: .waiting
+            ),
+            TinyPNGImageItem(
+                id: URL(fileURLWithPath: "/tmp/equal.png"),
+                relativePath: "equal.png",
+                byteCount: minimumBytes,
+                status: .waiting
+            ),
+        ]
+
+        #expect(model.minimumCompressionSizeKB == 100)
+        model.minimumCompressionSizeKB = 125
+
+        #expect(model.imageItems[0].status == .skipped)
+        #expect(model.imageItems[1].status == .skipped)
+        #expect(model.selectionSummary?.belowMinimumCount == 2)
+
+        let restored = TinyPNGModel(preferencesDefaults: defaults)
+        #expect(restored.minimumCompressionSizeKB == 125)
+
+        model.minimumCompressionSizeKB = Int.max
+        #expect(model.minimumCompressionSizeKB == TinyPNGModel.maximumMinimumCompressionSizeKB)
+    }
+
     @Test func tinyPNGDefaultsToReplacingOriginals() {
         let model = TinyPNGModel()
 
@@ -311,7 +362,10 @@ struct DevKitTests {
             TinyPNGInputScanner.scan(directory)
         }.value
 
-        #expect(result.summary == TinyPNGSelectionSummary(imageCount: 512, oversizedCount: 0))
+        #expect(
+            result.summary
+                == TinyPNGSelectionSummary(imageCount: 512, oversizedCount: 0, belowMinimumCount: 512)
+        )
     }
 
     @Test func tinyPNGProgressCountsCompletedAndSkippedImages() {

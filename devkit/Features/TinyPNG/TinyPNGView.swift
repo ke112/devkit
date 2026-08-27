@@ -22,6 +22,18 @@ struct TinyPNGView: View {
                     .foregroundStyle(.secondary)
             }
 
+            HStack(spacing: 8) {
+                Text("最低压缩大小")
+                TextField("100", value: $model.minimumCompressionSizeKB, format: .number)
+                    .frame(width: 72)
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
+                Text("KB 以上才压缩")
+                    .foregroundStyle(.secondary)
+            }
+            .disabled(model.isRunning || model.isScanning)
+            .help("小于此大小的图片会跳过压缩")
+
             TinyPNGDropArea(isTargeted: $isDropTargeted)
             .dropDestination(for: URL.self) { urls, _ in
                 guard let url = urls.first else { return false }
@@ -205,6 +217,13 @@ struct TinyPNGView: View {
                             Label(
                                 "\(summary.oversizedCount) 张超过 5 MB，将跳过上传",
                                 systemImage: "exclamationmark.triangle"
+                            )
+                            .foregroundStyle(.orange)
+                        }
+                        if summary.belowMinimumCount > 0 {
+                            Label(
+                                "\(summary.belowMinimumCount) 张小于最低大小，将跳过压缩",
+                                systemImage: "arrow.down.right.and.arrow.up.left"
                             )
                             .foregroundStyle(.orange)
                         }
@@ -440,6 +459,13 @@ private struct TinyPNGImagePreview: View {
 struct TinyPNGSelectionSummary: Equatable, Sendable {
     let imageCount: Int
     let oversizedCount: Int
+    let belowMinimumCount: Int
+
+    nonisolated init(imageCount: Int, oversizedCount: Int, belowMinimumCount: Int = 0) {
+        self.imageCount = imageCount
+        self.oversizedCount = oversizedCount
+        self.belowMinimumCount = belowMinimumCount
+    }
 }
 
 enum TinyPNGImageUploadStatus: Equatable {
@@ -546,10 +572,19 @@ struct TinyPNGScanResult: Sendable {
     let images: [TinyPNGScannedImage]
 
     nonisolated var summary: TinyPNGSelectionSummary {
+        summary()
+    }
+
+    nonisolated func summary(minimumCompressionBytes: Int64 = TinyPNGInputScanner.defaultMinimumCompressionBytes) -> TinyPNGSelectionSummary {
         TinyPNGSelectionSummary(
             imageCount: images.count,
             oversizedCount: images.reduce(into: 0) { count, image in
                 if image.byteCount > TinyPNGInputScanner.maxUploadBytes {
+                    count += 1
+                }
+            },
+            belowMinimumCount: images.reduce(into: 0) { count, image in
+                if image.byteCount < minimumCompressionBytes {
                     count += 1
                 }
             }
@@ -559,6 +594,7 @@ struct TinyPNGScanResult: Sendable {
 
 enum TinyPNGInputScanner {
     nonisolated static let maxUploadBytes: Int64 = 5 * 1024 * 1024
+    nonisolated static let defaultMinimumCompressionBytes: Int64 = 100 * 1024
     nonisolated static let supportedExtensions: Set<String> = ["png", "jpg", "jpeg", "webp"]
 
     nonisolated static func accepts(_ url: URL) -> Bool {
@@ -621,7 +657,7 @@ enum TinyPNGInputScanner {
     }
 
     nonisolated static func summary(for url: URL) -> TinyPNGSelectionSummary {
-        scan(url).summary
+        scan(url).summary()
     }
 
     nonisolated static func imageURLs(at url: URL) -> [URL] {
@@ -636,10 +672,25 @@ enum TinyPNGInputScanner {
 @MainActor
 @Observable
 final class TinyPNGModel {
+    static let defaultMinimumCompressionSizeKB = 100
+    static let maximumMinimumCompressionSizeKB = Int(Int64.max / 1024)
+    private static let minimumCompressionSizeKey = "tinypng.minimumCompressionSizeKB"
+
     var selectedURL: URL?
     var selectionSummary: TinyPNGSelectionSummary?
     var imageItems: [TinyPNGImageItem] = []
     var replaceOriginals = true
+    var minimumCompressionSizeKB: Int {
+        didSet {
+            let normalized = Self.normalizedMinimumCompressionSizeKB(minimumCompressionSizeKB)
+            if minimumCompressionSizeKB != normalized {
+                minimumCompressionSizeKB = normalized
+                return
+            }
+            preferencesDefaults.set(normalized, forKey: Self.minimumCompressionSizeKey)
+            refreshSkippedItems()
+        }
+    }
     var isScanning = false
     var isRunning = false
     var isStopping = false
@@ -653,6 +704,15 @@ final class TinyPNGModel {
     private var activeSelectionToken = UUID()
     private var outputEventBuffer = ""
     private var processCancellation: StreamingProcessCancellation?
+    private let preferencesDefaults: UserDefaults
+
+    init(preferencesDefaults: UserDefaults = .standard) {
+        self.preferencesDefaults = preferencesDefaults
+        let storedValue = preferencesDefaults.object(forKey: Self.minimumCompressionSizeKey) as? Int
+        self.minimumCompressionSizeKB = Self.normalizedMinimumCompressionSizeKB(
+            storedValue ?? Self.defaultMinimumCompressionSizeKB
+        )
+    }
 
     var canRun: Bool {
         selectedURL != nil
@@ -736,6 +796,7 @@ final class TinyPNGModel {
         let selectionToken = UUID()
         activeSelectionToken = selectionToken
         let hasSecurityScope = standardizedURL.startAccessingSecurityScopedResource()
+        let minimumCompressionBytes = minimumCompressionSizeBytes
         let worker = Task.detached(priority: .userInitiated) {
             TinyPNGInputScanner.scan(standardizedURL)
         }
@@ -767,13 +828,13 @@ final class TinyPNGModel {
                 return
             }
 
-            selectionSummary = result.summary
+            selectionSummary = result.summary(minimumCompressionBytes: minimumCompressionBytes)
             imageItems = result.images.map { image in
                 TinyPNGImageItem(
                     id: image.url,
                     relativePath: self.relativePath(for: image.url, inputURL: standardizedURL),
                     byteCount: image.byteCount,
-                    status: image.byteCount > TinyPNGInputScanner.maxUploadBytes
+                    status: self.shouldSkip(image.byteCount, minimumCompressionBytes: minimumCompressionBytes)
                         ? .skipped
                         : .waiting
                 )
@@ -808,6 +869,7 @@ final class TinyPNGModel {
         operationStatusSystemImage = "arrow.triangle.2.circlepath"
         alertMessage = nil
         let shouldReplaceOriginals = replaceOriginals
+        let minimumCompressionSizeKB = minimumCompressionSizeKB
 
         Task { [weak self, selectedURL, scriptURL, hasSecurityScope, shouldReplaceOriginals, cancellation] in
             defer {
@@ -826,7 +888,8 @@ final class TinyPNGModel {
                         "devkit",
                         scriptURL.path,
                         selectedURL.path,
-                    ] + (shouldReplaceOriginals ? ["--replace"] : []),
+                    ] + (shouldReplaceOriginals ? ["--replace"] : [])
+                        + ["--min-size-kb", String(minimumCompressionSizeKB)],
                     currentDirectoryURL: selectedURL.deletingLastPathComponent(),
                     cancellation: cancellation,
                     environment: [
@@ -858,9 +921,12 @@ final class TinyPNGModel {
                         updated.status = .success
                         return updated
                     }
-                    let skippedCount = selectionSummary?.oversizedCount ?? 0
+                    let skippedCount = imageItems.filter {
+                        if case .skipped = $0.status { return true }
+                        return false
+                    }.count
                     operationStatus = skippedCount > 0
-                        ? "压缩完成（跳过 \(skippedCount) 张超限图片）"
+                        ? "压缩完成（跳过 \(skippedCount) 张图片）"
                         : "压缩完成"
                     operationStatusSystemImage = "checkmark.circle"
                 } else {
@@ -972,6 +1038,41 @@ final class TinyPNGModel {
             updated.compressionPercentage = 0
             return updated
         }
+    }
+
+    private var minimumCompressionSizeBytes: Int64 {
+        Int64(minimumCompressionSizeKB) * 1024
+    }
+
+    private static func normalizedMinimumCompressionSizeKB(_ value: Int) -> Int {
+        min(max(0, value), Self.maximumMinimumCompressionSizeKB)
+    }
+
+    private func shouldSkip(_ byteCount: Int64, minimumCompressionBytes: Int64) -> Bool {
+        byteCount > TinyPNGInputScanner.maxUploadBytes || byteCount < minimumCompressionBytes
+    }
+
+    private func refreshSkippedItems() {
+        guard !imageItems.isEmpty, !isRunning, !isScanning else { return }
+        let minimumBytes = minimumCompressionSizeBytes
+        imageItems = imageItems.map { item in
+            switch item.status {
+            case .waiting, .skipped:
+                break
+            case .success, .uploading, .cancelled, .failed:
+                return item
+            }
+            var updated = item
+            updated.status = shouldSkip(item.byteCount, minimumCompressionBytes: minimumBytes) ? .skipped : .waiting
+            updated.compressedByteCount = nil
+            updated.compressionPercentage = nil
+            return updated
+        }
+        selectionSummary = TinyPNGSelectionSummary(
+            imageCount: imageItems.count,
+            oversizedCount: imageItems.filter { $0.byteCount > TinyPNGInputScanner.maxUploadBytes }.count,
+            belowMinimumCount: imageItems.filter { $0.byteCount < minimumBytes }.count
+        )
     }
 
     private func appendProcessOutput(_ chunk: String) {

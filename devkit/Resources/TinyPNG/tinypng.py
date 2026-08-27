@@ -251,12 +251,16 @@ def collect_images(input_path: Path) -> list[Path]:
     return images
 
 
-def oversized_images(images: list[Path]) -> list[tuple[Path, int]]:
-    """在调用 TinyPNG 前筛出超过官方单文件限制的图片。"""
+def skipped_images(images: list[Path], minimum_compression_bytes: int) -> list[tuple[Path, int, str]]:
+    """在调用 TinyPNG 前筛出超过上传上限或低于最低压缩大小的图片。"""
     return [
-        (image, image.stat().st_size)
+        (
+            image,
+            image.stat().st_size,
+            "超过单张上传上限" if image.stat().st_size > MAX_UPLOAD_BYTES else "低于最低压缩大小",
+        )
         for image in images
-        if image.stat().st_size > MAX_UPLOAD_BYTES
+        if image.stat().st_size > MAX_UPLOAD_BYTES or image.stat().st_size < minimum_compression_bytes
     ]
 
 
@@ -355,6 +359,12 @@ def main():
         action="store_true",
         help="压缩成功后替换原图；默认写入同级时间戳文件夹",
     )
+    parser.add_argument(
+        "--min-size-kb",
+        type=int,
+        default=100,
+        help="小于此大小（KB）的图片跳过压缩，默认 100",
+    )
     args = parser.parse_args()
 
     raw = args.path
@@ -368,6 +378,7 @@ def main():
             print("未输入路径")
             sys.exit(1)
     replace_originals = args.replace
+    minimum_compression_bytes = max(0, args.min_size_kb) * 1024
 
     input_path = Path(raw.strip()).resolve()
     if not input_path.exists():
@@ -409,12 +420,13 @@ def main():
     print(f"  图片数量: {len(images)}")
     print(f"  并发数: {MAX_WORKERS}")
     print(f"  单张上传上限: {format_size(MAX_UPLOAD_BYTES)}")
+    print(f"  最低压缩大小: {format_size(minimum_compression_bytes)}")
     print(f"{'=' * 60}\n")
 
-    # TinyPNG 会拒绝超过 5 MB 的单张图片；先在本地筛掉，避免无效上传和重试。
-    skipped = oversized_images(images)
-    skipped_paths = {path for path, _ in skipped}
-    for img, size in skipped:
+    # 先在本地筛掉不符合大小条件的图片，避免无效上传和重试。
+    skipped = skipped_images(images, minimum_compression_bytes)
+    skipped_paths = {path for path, _, _ in skipped}
+    for img, size, reason in skipped:
         if not replace_originals:
             if input_path.is_file():
                 unchanged_dst = output_dir / img.name
@@ -422,10 +434,10 @@ def main():
                 unchanged_dst = output_dir / img.relative_to(input_path)
             unchanged_dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(img, unchanged_dst)
-        print(f"  ⚠️ 跳过（超过单张上传上限）: {img} ({format_size(size)})")
+        print(f"  ⚠️ 跳过（{reason}）: {img} ({format_size(size)})")
     if skipped:
         unchanged_message = "原图已保留到输出目录" if not replace_originals else "原图保持不变"
-        print(f"\n  共跳过 {len(skipped)} 张超过 5 MB 的图片，未调用 TinyPNG；{unchanged_message}。\n")
+        print(f"\n  共跳过 {len(skipped)} 张图片，未调用 TinyPNG；{unchanged_message}。\n")
 
     # 构建任务列表
     tasks = []
