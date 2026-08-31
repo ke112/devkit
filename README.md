@@ -1,6 +1,6 @@
 # DevKit
 
-DevKit 是一个原生 macOS 开发工具集合，当前包含 iOS 模拟器管理、图片叠加、iOS App 发版和 TinyPNG 图片压缩四个独立模块。界面使用 SwiftUI，系统集成与图片处理使用 AppKit 和 Foundation，不依赖第三方库。
+DevKit 是一个原生 macOS 开发工具集合，当前包含 iOS 模拟器管理、图片叠加、iOS App 发版、TinyPNG、WebP 和媒体压缩六个独立模块。界面使用 SwiftUI，系统集成与图片处理使用 AppKit、ImageIO、AVFoundation 和 Foundation，不依赖第三方库。
 
 ## 功能
 
@@ -31,6 +31,16 @@ DevKit 是一个原生 macOS 开发工具集合，当前包含 iOS 模拟器管�
 - 显示总压缩前后大小、节省比例，以及每张图片的原始大小、压缩大小和节省比例
 - 支持主动停止；离开压缩页面或 DevKit 退出时会终止压缩子进程
 - 压缩进行中返回页面会先确认是否停止任务
+
+### 媒体压缩
+
+- 图片和视频共用一个页面，通过分段控件切换处理类型
+- 图片支持 PNG、JPG、HEIC、WebP、TIFF、BMP、GIF、TGA、PSD；可设置目标大小和输出格式
+- 图片压缩优先保持原格式，必要时自动尝试 HEIC/JPEG；无法达到目标时保留原图，避免丢失文件
+- 视频支持 MP4、MOV、M4V 和高/中/低三档质量预设，按源视频分辨率选择不超过原尺寸的导出档位
+- 支持拖拽、文件选择、文件夹递归、目录结构保留和批量去重
+- 结果写入下载目录下的 `DevKit` 文件夹，可查看图片压缩前后对比并在 Finder 中定位文件
+- 图片编码和视频导出在后台执行，支持主动停止；压缩后体积没有变小的视频会保留原文件
 
 ## 环境要求
 
@@ -114,10 +124,11 @@ devkit/
 ├── devkitApp.swift
 ├── Features/
 │   ├── ImageOverlay/
+│   ├── MediaCompression/
 │   └── SimulatorManagement/
 └── Assets.xcassets/
 DevKitTests/
 package_release.sh
 ~~~
 
-模拟器、图片叠加和 App Store 发版模块按各自流程处理数据。TinyPNG 模块会将符合条件的图片上传到 TinyPNG 进行云端压缩；模拟器模块仅调用本机 Xcode 和 CoreSimulator 工具。
+模拟器、图片叠加、App Store 发版、TinyPNG、WebP 和媒体压缩模块按各自流程处理数据。TinyPNG 模块会将符合条件的图片上传到 TinyPNG 进行云端压缩；WebP 和媒体压缩模块在本机处理文件，模拟器模块仅调用本机 Xcode 和 CoreSimulator 工具。

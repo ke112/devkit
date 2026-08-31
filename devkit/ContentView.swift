@@ -59,6 +59,8 @@ struct ContentView: View {
                     TinyPNGView()
                 case .webPConversion:
                     WebPConversionView()
+                case .mediaCompression:
+                    MediaCompressionView()
                 }
             }
         }
@@ -79,6 +81,7 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
     case appStoreRelease
     case tinyPNG
     case webPConversion
+    case mediaCompression
 
     var id: Self { self }
 
@@ -94,6 +97,8 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
             "TinyPNG 图片压缩"
         case .webPConversion:
             "WebP 图片转换"
+        case .mediaCompression:
+            "媒体压缩"
         }
     }
 
@@ -109,6 +114,8 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
             "arrow.down.circle"
         case .webPConversion:
             "photo.badge.arrow.down"
+        case .mediaCompression:
+            "rectangle.compress.vertical"
         }
     }
 }
