@@ -42,3 +42,13 @@ An image excluded before upload because it is below the minimum compression size
 **Top-image hit area**:
 The top image's displayed rectangular frame, including transparent pixels. A gesture that begins inside this area edits the top image; a gesture that begins elsewhere navigates the preview viewport.
 _Avoid_: Opaque pixels, selected layer
+
+# Watermark Removal
+
+**Watermark selection**:
+The normalized rectangle drawn over the imported image in the preview. It is converted to source-image pixel coordinates before processing.
+_Avoid_: Preview viewport, output canvas
+
+**Local repair**:
+The built-in processor replaces selected pixels using weighted samples from the nearest available pixels outside the selection. Automatic mode runs Vision OCR on overlapping upscaled tiles, groups repeated numeric fingerprints, expands each match into a repair mask, and processes every mask. Processing is local and produces a new PNG; it does not modify the source file.
+_Avoid_: AI inpainting, original replacement

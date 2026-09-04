@@ -1,6 +1,6 @@
 # DevKit
 
-DevKit 是一个原生 macOS 开发工具集合，当前包含 iOS 模拟器管理、图片叠加、iOS App 发版、TinyPNG、WebP 和媒体压缩六个独立模块。界面使用 SwiftUI，系统集成与图片处理使用 AppKit、ImageIO、AVFoundation 和 Foundation，不依赖第三方库。
+DevKit 是一个原生 macOS 开发工具集合，当前包含 iOS 模拟器管理、图片叠加、去除图片水印、iOS App 发版、TinyPNG、WebP 和媒体压缩七个独立模块。界面使用 SwiftUI，系统集成与图片处理使用 AppKit、ImageIO、AVFoundation 和 Foundation，不依赖第三方库。
 
 ## 功能
 
@@ -19,6 +19,14 @@ DevKit 是一个原生 macOS 开发工具集合，当前包含 iOS 模拟器管�
 - 实时调节上层图片透明度并预览叠加结果
 - 按底图原始像素尺寸导出 PNG
 - 上层图片保持宽高比并居中适配底图画布
+
+### 去除图片水印
+
+- 通过文件选择器或拖拽导入单张图片
+- 自动扫描整张图片中的重复数字指纹水印并逐处修复
+- 也可在预览中拖出单个水印区域，使用周围像素进行本地修复
+- 修复结果保留原图尺寸，可重新选择区域并导出为 PNG
+- 不会覆盖原始图片；自动识别不到的水印可改用手动框选
 
 ### TinyPNG 图片压缩
 
@@ -124,6 +132,7 @@ devkit/
 ├── devkitApp.swift
 ├── Features/
 │   ├── ImageOverlay/
+│   ├── WatermarkRemoval/
 │   ├── MediaCompression/
 │   └── SimulatorManagement/
 └── Assets.xcassets/
@@ -131,4 +140,4 @@ DevKitTests/
 package_release.sh
 ~~~
 
-模拟器、图片叠加、App Store 发版、TinyPNG、WebP 和媒体压缩模块按各自流程处理数据。TinyPNG 模块会将符合条件的图片上传到 TinyPNG 进行云端压缩；WebP 和媒体压缩模块在本机处理文件，模拟器模块仅调用本机 Xcode 和 CoreSimulator 工具。
+模拟器、图片叠加、去除图片水印、App Store 发版、TinyPNG、WebP 和媒体压缩模块按各自流程处理数据。去除图片水印、WebP 和媒体压缩模块在本机处理文件；TinyPNG 模块会将符合条件的图片上传到 TinyPNG 进行云端压缩；模拟器模块仅调用本机 Xcode 和 CoreSimulator 工具。

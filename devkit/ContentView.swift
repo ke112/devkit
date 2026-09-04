@@ -26,12 +26,15 @@ struct ContentView: View {
                         systemImage: "square.grid.2x2"
                     )
                 } else {
-                    LazyVGrid(columns: columns, spacing: 20) {
-                        ForEach(visibleFeatureSettings) { setting in
-                            FeatureLink(feature: setting.feature)
+                    ScrollView(.vertical) {
+                        LazyVGrid(columns: columns, spacing: 20) {
+                            ForEach(visibleFeatureSettings) { setting in
+                                FeatureLink(feature: setting.feature)
+                            }
                         }
+                        .padding(32)
                     }
-                    .padding(32)
+                    .scrollIndicators(.visible)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
             }
@@ -61,6 +64,8 @@ struct ContentView: View {
                     WebPConversionView()
                 case .mediaCompression:
                     MediaCompressionView()
+                case .watermarkRemoval:
+                    WatermarkRemovalView()
                 }
             }
         }
@@ -82,6 +87,7 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
     case tinyPNG
     case webPConversion
     case mediaCompression
+    case watermarkRemoval
 
     var id: Self { self }
 
@@ -99,6 +105,8 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
             "WebP 图片转换"
         case .mediaCompression:
             "媒体压缩"
+        case .watermarkRemoval:
+            "去除图片水印"
         }
     }
 
@@ -116,6 +124,8 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
             "photo.badge.arrow.down"
         case .mediaCompression:
             "rectangle.compress.vertical"
+        case .watermarkRemoval:
+            "eraser"
         }
     }
 }
@@ -132,7 +142,7 @@ enum HomeFeaturePreferences {
 
     static var defaultSettings: [HomeFeatureSetting] {
         DevKitFeature.allCases.map {
-            HomeFeatureSetting(feature: $0, isVisible: true)
+            HomeFeatureSetting(feature: $0, isVisible: $0 != .watermarkRemoval)
         }
     }
 
@@ -160,7 +170,12 @@ enum HomeFeaturePreferences {
             normalizedSettings.append(setting)
         }
         for feature in DevKitFeature.allCases where includedFeatures.insert(feature).inserted {
-            normalizedSettings.append(HomeFeatureSetting(feature: feature, isVisible: true))
+            normalizedSettings.append(
+                HomeFeatureSetting(
+                    feature: feature,
+                    isVisible: feature != .watermarkRemoval
+                )
+            )
         }
         return normalizedSettings
     }

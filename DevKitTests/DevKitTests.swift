@@ -243,6 +243,7 @@ struct DevKitTests {
             HomeFeatureSetting(feature: .tinyPNG, isVisible: true),
             HomeFeatureSetting(feature: .webPConversion, isVisible: true),
             HomeFeatureSetting(feature: .mediaCompression, isVisible: true),
+            HomeFeatureSetting(feature: .watermarkRemoval, isVisible: false),
         ])
     }
 
@@ -259,7 +260,56 @@ struct DevKitTests {
             HomeFeatureSetting(feature: .tinyPNG, isVisible: true),
             HomeFeatureSetting(feature: .webPConversion, isVisible: true),
             HomeFeatureSetting(feature: .mediaCompression, isVisible: true),
+            HomeFeatureSetting(feature: .watermarkRemoval, isVisible: false),
         ])
+    }
+
+    @Test func watermarkRemovalRejectsEmptySelection() throws {
+        let image = makeImage(width: 20, height: 20, color: .red)
+        #expect(throws: WatermarkRemovalError.invalidSelection) {
+            try WatermarkRemovalProcessor.removeWatermark(from: image, selection: .zero)
+        }
+    }
+
+    @Test func watermarkRemovalPreservesImageDimensions() throws {
+        let image = makeImage(width: 20, height: 12, color: .red)
+        let result = try WatermarkRemovalProcessor.removeWatermark(
+            from: image,
+            selection: CGRect(x: 5, y: 3, width: 4, height: 3)
+        )
+        let pixels = try #require(result.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        #expect(pixels.width == 20)
+        #expect(pixels.height == 12)
+    }
+
+    @Test func watermarkRemovalReplacesSelectedPixelsFromSurroundingColor() throws {
+        let image = makeImage(width: 20, height: 20, color: .red)
+        let result = try WatermarkRemovalProcessor.removeWatermark(
+            from: image,
+            selection: CGRect(x: 7, y: 7, width: 6, height: 6)
+        )
+        let pixels = try #require(result.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        let center = try #require(NSBitmapImageRep(cgImage: pixels).colorAt(x: 10, y: 10))
+        #expect(center.redComponent > 0.8)
+        #expect(center.blueComponent < 0.2)
+    }
+
+    @Test func watermarkRemovalProducesPNGData() throws {
+        let image = makeImage(width: 8, height: 8, color: .blue)
+        let data = try WatermarkRemovalProcessor.pngData(for: image)
+        #expect(data.starts(with: [137, 80, 78, 71]))
+    }
+
+    @Test func watermarkTextNormalizationGroupsWhitespaceAndPunctuation() {
+        #expect(
+            WatermarkRemovalProcessor.normalizedText("张志华 6989")
+                == WatermarkRemovalProcessor.normalizedText("张志华-6989")
+        )
+        #expect(WatermarkRemovalProcessor.numericToken("张志华 6989") == "6989")
+        #expect(WatermarkRemovalProcessor.numericToken("标题 12") == nil)
+        #expect(WatermarkRemovalProcessor.numericToken("正文地址 10.100.103.91:3004/credits-rules") == nil)
+        #expect(WatermarkRemovalProcessor.numericTokensMatch("6989", "6982"))
+        #expect(!WatermarkRemovalProcessor.numericTokensMatch("6989", "6882"))
     }
 
     @Test func homeFeaturePreferencesMoveFeatureToTargetPosition() {
@@ -271,7 +321,7 @@ struct DevKitTests {
 
         #expect(
             settings.map(\.feature)
-                == [.imageOverlay, .simulatorManagement, .appStoreRelease, .tinyPNG, .webPConversion, .mediaCompression]
+                == [.imageOverlay, .simulatorManagement, .appStoreRelease, .tinyPNG, .webPConversion, .mediaCompression, .watermarkRemoval]
         )
     }
 
