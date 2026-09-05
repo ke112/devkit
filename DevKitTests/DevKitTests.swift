@@ -264,40 +264,160 @@ struct DevKitTests {
         ])
     }
 
-    @Test func watermarkRemovalRejectsEmptySelection() throws {
-        let image = makeImage(width: 20, height: 20, color: .red)
-        #expect(throws: WatermarkRemovalError.invalidSelection) {
-            try WatermarkRemovalProcessor.removeWatermark(from: image, selection: .zero)
-        }
-    }
-
-    @Test func watermarkRemovalPreservesImageDimensions() throws {
-        let image = makeImage(width: 20, height: 12, color: .red)
-        let result = try WatermarkRemovalProcessor.removeWatermark(
-            from: image,
-            selection: CGRect(x: 5, y: 3, width: 4, height: 3)
-        )
-        let pixels = try #require(result.cgImage(forProposedRect: nil, context: nil, hints: nil))
-        #expect(pixels.width == 20)
-        #expect(pixels.height == 12)
-    }
-
-    @Test func watermarkRemovalReplacesSelectedPixelsFromSurroundingColor() throws {
-        let image = makeImage(width: 20, height: 20, color: .red)
-        let result = try WatermarkRemovalProcessor.removeWatermark(
-            from: image,
-            selection: CGRect(x: 7, y: 7, width: 6, height: 6)
-        )
-        let pixels = try #require(result.cgImage(forProposedRect: nil, context: nil, hints: nil))
-        let center = try #require(NSBitmapImageRep(cgImage: pixels).colorAt(x: 10, y: 10))
-        #expect(center.redComponent > 0.8)
-        #expect(center.blueComponent < 0.2)
-    }
-
     @Test func watermarkRemovalProducesPNGData() throws {
         let image = makeImage(width: 8, height: 8, color: .blue)
         let data = try WatermarkRemovalProcessor.pngData(for: image)
         #expect(data.starts(with: [137, 80, 78, 71]))
+    }
+
+    @Test func automaticWatermarkRemovalPreservesContentAndRemovesEveryMark() throws {
+        let clean = makeWatermarkDocument(includeWatermarks: false)
+        let marked = makeWatermarkDocument(includeWatermarks: true)
+        let result = try WatermarkRemovalProcessor.removeDetectedWatermarks(from: marked)
+        let original = try #require(NSBitmapImageRep(data: WatermarkRemovalProcessor.pngData(for: marked)))
+        let expected = try #require(NSBitmapImageRep(data: WatermarkRemovalProcessor.pngData(for: clean)))
+        let actual = try #require(NSBitmapImageRep(data: WatermarkRemovalProcessor.pngData(for: result.image)))
+        #expect(actual.pixelsWide == original.pixelsWide)
+        #expect(actual.pixelsHigh == original.pixelsHigh)
+        var remainingWatermarkPixels = 0
+        var changedContentPixels = 0
+        var remainingLocations: [String] = []
+        for y in 0..<original.pixelsHigh {
+            for x in 0..<original.pixelsWide {
+                let before = original.colorAt(x: x, y: y)
+                let after = actual.colorAt(x: x, y: y)
+                let target = expected.colorAt(x: x, y: y)
+                if before == target {
+                    if after != before { changedContentPixels += 1 }
+                } else if after != target {
+                    remainingWatermarkPixels += 1
+                    if remainingLocations.count < 15 { remainingLocations.append("\(x),\(y): \(String(describing: after))") }
+                }
+            }
+        }
+        #expect(result.detectedRegionCount == 6)
+        #expect(remainingWatermarkPixels == 0, "\(remainingLocations)")
+        #expect(changedContentPixels == 0)
+    }
+
+    private func makeWatermarkDocument(includeWatermarks: Bool, overlappingContent: Bool = false) -> NSImage {
+        let image = makeImage(width: 640, height: 800, color: .white)
+        let bitmap = image.representations[0] as! NSBitmapImageRep
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        let bodyAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 18), .foregroundColor: NSColor.black,
+        ]
+        ("Quarterly report" as NSString).draw(at: CGPoint(x: 30, y: 750), withAttributes: bodyAttributes)
+        for (index, y) in [620, 390, 160].enumerated() {
+            ("Section \(index + 1): preserve this content." as NSString)
+                .draw(at: CGPoint(x: 35, y: y + 48), withAttributes: bodyAttributes)
+            for x in [65, 375] {
+                NSColor.systemBlue.setFill()
+                NSRect(x: x - 12, y: y + 5, width: 5, height: 16).fill()
+                if overlappingContent && x == 65 && y == 620 {
+                    NSRect(x: x, y: y, width: 68, height: 12).fill()
+                }
+                if includeWatermarks {
+                    ("6989" as NSString).draw(at: CGPoint(x: x, y: y), withAttributes: [
+                        .font: NSFont.monospacedSystemFont(ofSize: 26, weight: .regular),
+                        .foregroundColor: NSColor.black.withAlphaComponent(0.25),
+                    ])
+                }
+            }
+        }
+        return image
+    }
+
+    @Test func automaticWatermarkRemovalRestoresContentUnderTranslucentStrokes() throws {
+        let clean = makeWatermarkDocument(includeWatermarks: false, overlappingContent: true)
+        let marked = makeWatermarkDocument(includeWatermarks: true, overlappingContent: true)
+        let result = try WatermarkRemovalProcessor.removeDetectedWatermarks(from: marked)
+        let original = try #require(NSBitmapImageRep(data: WatermarkRemovalProcessor.pngData(for: marked)))
+        let expected = try #require(NSBitmapImageRep(data: WatermarkRemovalProcessor.pngData(for: clean)))
+        let actual = try #require(NSBitmapImageRep(data: WatermarkRemovalProcessor.pngData(for: result.image)))
+        var changedContentPixels = 0
+        var damagedWatermarkPixels = 0
+        for y in 0..<original.pixelsHigh {
+            for x in 0..<original.pixelsWide {
+                let before = try #require(original.colorAt(x: x, y: y))
+                let after = try #require(actual.colorAt(x: x, y: y))
+                let target = try #require(expected.colorAt(x: x, y: y))
+                if before == target {
+                    if after != before { changedContentPixels += 1 }
+                } else {
+                    let error = max(abs(after.redComponent - target.redComponent),
+                                    abs(after.greenComponent - target.greenComponent),
+                                    abs(after.blueComponent - target.blueComponent))
+                    if error > 2.0 / 255 { damagedWatermarkPixels += 1 }
+                }
+            }
+        }
+        #expect(result.detectedRegionCount == 6)
+        #expect(changedContentPixels == 0)
+        #expect(damagedWatermarkPixels == 0)
+    }
+
+    @Test func watermarkRepairPreservesTransparentPixelsAndDarkContent() throws {
+        let image = makeImage(width: 120, height: 100, color: .white)
+        let bitmap = try #require(image.representations.first as? NSBitmapImageRep)
+        let regions = [10, 45, 80].map { CGRect(x: $0, y: 20, width: 20, height: 20) }
+        for region in regions {
+            for y in 23..<34 {
+                bitmap.setColor(NSColor(deviceRed: 0.75, green: 0.75, blue: 0.75, alpha: 1), atX: Int(region.minX) + 3, y: y)
+            }
+            bitmap.setColor(NSColor(deviceRed: 0, green: 0, blue: 0, alpha: 1), atX: Int(region.minX) + 10, y: 27)
+        }
+        bitmap.setColor(NSColor(deviceRed: 0.27, green: 0.53, blue: 0.81, alpha: 0.13), atX: 2, y: 2)
+        let before = try WatermarkRemovalProcessor.pngData(for: image)
+        let result = try WatermarkRemovalProcessor.repairRepeatedWatermarks(from: image, regionGroups: [regions])
+        let output = try #require(NSBitmapImageRep(data: WatermarkRemovalProcessor.pngData(for: result.image)))
+        let original = try #require(NSBitmapImageRep(data: before))
+        #expect(output.colorAt(x: 2, y: 2) == original.colorAt(x: 2, y: 2))
+        for region in regions {
+            #expect(output.colorAt(x: Int(region.minX) + 10, y: 27) == original.colorAt(x: Int(region.minX) + 10, y: 27))
+            #expect(output.colorAt(x: Int(region.minX) + 3, y: 25) == output.colorAt(x: 0, y: 0))
+        }
+        #expect(try WatermarkRemovalProcessor.pngData(for: image) == before)
+    }
+
+    @Test func watermarkRepairRejectsOpaqueTextAndUncertainBackground() throws {
+        let image = makeImage(width: 120, height: 100, color: .white)
+        let bitmap = try #require(image.representations.first as? NSBitmapImageRep)
+        let regions = [10, 45, 80].map { CGRect(x: $0, y: 20, width: 20, height: 20) }
+        for region in regions {
+            bitmap.setColor(NSColor(deviceRed: 0, green: 0, blue: 0, alpha: 1), atX: Int(region.minX) + 3, y: 25)
+        }
+        #expect(throws: WatermarkRemovalError.unsupportedBackground) {
+            try WatermarkRemovalProcessor.repairRepeatedWatermarks(from: image, regionGroups: [regions])
+        }
+        for y in 20..<40 {
+            for x in 10..<30 {
+                let value = CGFloat(x + y) / 100
+                bitmap.setColor(NSColor(deviceRed: value, green: value, blue: value, alpha: 1), atX: x, y: y)
+            }
+        }
+        #expect(throws: WatermarkRemovalError.unsupportedBackground) {
+            try WatermarkRemovalProcessor.repairRepeatedWatermarks(from: image, regionGroups: [regions])
+        }
+    }
+
+    @Test func automaticWatermarkRemovalRejectsDocumentWithoutWatermarks() throws {
+        #expect(throws: WatermarkRemovalError.noWatermarkDetected) {
+            try WatermarkRemovalProcessor.removeDetectedWatermarks(from: makeWatermarkDocument(includeWatermarks: false))
+        }
+    }
+
+    @Test func watermarkProcessingRunsOffTheMainActor() async throws {
+        let data = try WatermarkRemovalProcessor.pngData(for: makeWatermarkDocument(includeWatermarks: true))
+        let ranOnMainThread = try await Task.detached {
+            let onMainThread = Thread.isMainThread
+            let image = try #require(NSImage(data: data))
+            _ = try WatermarkRemovalProcessor.removeDetectedWatermarks(from: image)
+            return onMainThread
+        }.value
+        #expect(!ranOnMainThread)
     }
 
     @Test func watermarkTextNormalizationGroupsWhitespaceAndPunctuation() {

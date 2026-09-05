@@ -45,10 +45,10 @@ _Avoid_: Opaque pixels, selected layer
 
 # Watermark Removal
 
-**Watermark selection**:
-The normalized rectangle drawn over the imported image in the preview. It is converted to source-image pixel coordinates before processing.
-_Avoid_: Preview viewport, output canvas
+**Watermark candidate**:
+A source-pixel rectangle obtained by mapping Vision OCR from an overlapping tile back to the original image. Vision boxes have a bottom-left origin; image crops and repair masks use a top-left origin. Repeated numeric fingerprints identify candidate families, not permission to erase every pixel in a rectangle.
+_Avoid_: Manual selection, preview viewport
 
 **Local repair**:
-The built-in processor replaces selected pixels using weighted samples from the nearest available pixels outside the selection. Automatic mode runs Vision OCR on overlapping upscaled tiles, groups repeated numeric fingerprints, expands each match into a repair mask, and processes every mask. Processing is local and produces a new PNG; it does not modify the source file.
+The built-in processor learns a low-contrast stroke template from a repeated watermark on a uniform background. It matches that template across the image; occluded matches require both repeated spatial offsets and visible stroke evidence. Within the stroke mask, agreeing unmasked neighbors provide the background; otherwise the processor reverses the shared dark translucent overlay. Source pixels outside the mask remain untouched. Processing is local, cancellable, automatic-only, and produces a new PNG without modifying the source file. Opaque occlusion and pre-JPEG image detail cannot be recovered exactly from a single image.
 _Avoid_: AI inpainting, original replacement

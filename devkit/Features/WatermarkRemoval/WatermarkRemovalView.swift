@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 struct WatermarkRemovalView: View {
     @State private var importedImage: WatermarkImportedImage?
     @State private var processedImage: NSImage?
-    @State private var selection = CGRect.zero
+    @State private var showsOriginal = false
     @State private var isImporterPresented = false
     @State private var isDropTargeted = false
     @State private var isProcessing = false
@@ -75,9 +75,6 @@ struct WatermarkRemovalView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("去除图片水印")
                 .font(.largeTitle.bold())
-            Text("自动识别全图重复数字指纹水印，也可手动框选修复")
-                .font(.title3)
-                .foregroundStyle(.secondary)
         }
     }
 
@@ -118,11 +115,9 @@ struct WatermarkRemovalView: View {
     private func editor(for importedImage: WatermarkImportedImage) -> some View {
         VStack(spacing: 16) {
             HStack(spacing: 16) {
-                WatermarkImageCanvas(
-                    image: processedImage ?? importedImage.image,
-                    selection: $selection,
-                    isDisabled: isProcessing || processedImage != nil
-                )
+                Image(nsImage: showsOriginal ? importedImage.image : (processedImage ?? importedImage.image))
+                .resizable()
+                .aspectRatio(contentMode: .fit)
                 .frame(minWidth: 480, minHeight: 360)
                 .background(Color(nsColor: .underPageBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -131,30 +126,33 @@ struct WatermarkRemovalView: View {
                     Label(importedImage.name, systemImage: "photo")
                         .lineLimit(2)
                         .truncationMode(.middle)
-                    Text(processedImage == nil ? "在左侧图片上拖出水印区域" : "修复结果已生成，可导出 PNG")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if processedImage != nil {
+                        Picker("预览", selection: $showsOriginal) {
+                            Text("原图").tag(true)
+                            Text("修复结果").tag(false)
+                        }
+                        .pickerStyle(.segmented)
+                    }
 
                     Spacer(minLength: 0)
 
                     Button {
-                        process()
+                        autoProcess()
                     } label: {
-                        Label(isProcessing ? "正在修复" : "去除水印", systemImage: "wand.and.stars")
+                        Label(isProcessing ? "正在自动修复" : "自动修复水印", systemImage: "sparkles")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
-                    .disabled(selection.isEmpty || isProcessing || processedImage != nil)
-
-                    Button {
-                        autoProcess()
-                    } label: {
-                        Label(isProcessing ? "正在自动修复" : "自动修复整图", systemImage: "sparkles")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
                     .disabled(isProcessing || processedImage != nil)
+
+                    if isProcessing {
+                        ProgressView()
+                            .controlSize(.small)
+                        Button("取消", role: .cancel) {
+                            processingTask?.cancel()
+                        }
+                    }
 
                     if detectedRegionCount > 0 {
                         Text("已修复 \(detectedRegionCount) 个重复水印区域")
@@ -163,14 +161,14 @@ struct WatermarkRemovalView: View {
                     }
 
                     Button {
-                        selection = .zero
                         processedImage = nil
+                        showsOriginal = false
                         detectedRegionCount = 0
                     } label: {
-                        Label("重新选择区域", systemImage: "arrow.counterclockwise")
+                        Label("还原原图", systemImage: "arrow.counterclockwise")
                             .frame(maxWidth: .infinity)
                     }
-                    .disabled(isProcessing || (selection.isEmpty && processedImage == nil))
+                    .disabled(isProcessing || processedImage == nil)
 
                     Button {
                         guard let processedImage,
@@ -191,7 +189,7 @@ struct WatermarkRemovalView: View {
                         self.importedImage = nil
                         processingTask?.cancel()
                         processedImage = nil
-                        selection = .zero
+                        showsOriginal = false
                         detectedRegionCount = 0
                     } label: {
                         Label("更换图片", systemImage: "photo.badge.plus")
@@ -220,68 +218,10 @@ struct WatermarkRemovalView: View {
             processingID = UUID()
             isProcessing = false
             processedImage = nil
-            selection = .zero
+            showsOriginal = false
             detectedRegionCount = 0
         } catch {
             errorMessage = error.localizedDescription
-        }
-    }
-
-    private func process() {
-        guard let importedImage, !selection.isEmpty else {
-            errorMessage = WatermarkRemovalError.invalidSelection.localizedDescription
-            return
-        }
-        let pixelWidth = importedImage.image.cgImage(forProposedRect: nil, context: nil, hints: nil)?.width ?? 0
-        let pixelHeight = importedImage.image.cgImage(forProposedRect: nil, context: nil, hints: nil)?.height ?? 0
-        guard pixelWidth > 0, pixelHeight > 0 else {
-            errorMessage = WatermarkRemovalError.invalidImage.localizedDescription
-            return
-        }
-
-        processingTask?.cancel()
-        let jobID = UUID()
-        processingID = jobID
-        isProcessing = true
-        let pixelSelection = CGRect(
-            x: selection.minX * CGFloat(pixelWidth),
-            y: selection.minY * CGFloat(pixelHeight),
-            width: selection.width * CGFloat(pixelWidth),
-            height: selection.height * CGFloat(pixelHeight)
-        )
-        let sourceData = importedImage.data
-        let worker = Task.detached(priority: .userInitiated) {
-            guard let image = NSImage(data: sourceData) else {
-                throw WatermarkRemovalError.invalidImage
-            }
-            let result = try WatermarkRemovalProcessor.removeWatermark(
-                from: image,
-                selection: pixelSelection
-            )
-            return try WatermarkRemovalProcessor.pngData(for: result)
-        }
-        processingTask = Task { @MainActor in
-            defer {
-                if processingID == jobID { processingTask = nil }
-            }
-            do {
-                let data = try await withTaskCancellationHandler {
-                    try await worker.value
-                } onCancel: {
-                    worker.cancel()
-                }
-                guard !Task.isCancelled, processingID == jobID,
-                      let image = NSImage(data: data) else { return }
-                processedImage = image
-            } catch is CancellationError {
-                if processingID == jobID { isProcessing = false }
-                return
-            } catch {
-                guard !Task.isCancelled, processingID == jobID else { return }
-                errorMessage = error.localizedDescription
-            }
-            guard processingID == jobID else { return }
-            isProcessing = false
         }
     }
 
@@ -301,7 +241,10 @@ struct WatermarkRemovalView: View {
         }
         processingTask = Task { @MainActor in
             defer {
-                if processingID == jobID { processingTask = nil }
+                if processingID == jobID {
+                    processingTask = nil
+                    isProcessing = false
+                }
             }
             do {
                 let (data, regionCount) = try await withTaskCancellationHandler {
@@ -309,19 +252,17 @@ struct WatermarkRemovalView: View {
                 } onCancel: {
                     worker.cancel()
                 }
-                guard !Task.isCancelled, processingID == jobID,
-                      let image = NSImage(data: data) else { return }
+                guard !Task.isCancelled, processingID == jobID else { return }
+                guard let image = NSImage(data: data) else { throw WatermarkRemovalError.invalidImage }
                 processedImage = image
+                showsOriginal = false
                 detectedRegionCount = regionCount
             } catch is CancellationError {
-                if processingID == jobID { isProcessing = false }
                 return
             } catch {
                 guard !Task.isCancelled, processingID == jobID else { return }
                 errorMessage = error.localizedDescription
             }
-            guard processingID == jobID else { return }
-            isProcessing = false
         }
     }
 }
@@ -330,87 +271,4 @@ private struct WatermarkImportedImage {
     let name: String
     let image: NSImage
     let data: Data
-}
-
-private struct WatermarkImageCanvas: View {
-    let image: NSImage
-    @Binding var selection: CGRect
-    let isDisabled: Bool
-    @State private var dragStart: CGPoint?
-
-    var body: some View {
-        GeometryReader { proxy in
-            let imageRect = aspectFitRect(imageSize: image.size, in: proxy.size)
-            ZStack {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: imageRect.width, height: imageRect.height)
-                    .position(x: imageRect.midX, y: imageRect.midY)
-
-                if !selection.isEmpty {
-                    let rect = displayRect(selection, in: imageRect)
-                    Rectangle()
-                        .fill(Color.accentColor.opacity(0.2))
-                        .frame(width: rect.width, height: rect.height)
-                        .overlay { Rectangle().stroke(Color.accentColor, lineWidth: 2) }
-                        .position(x: rect.midX, y: rect.midY)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture()
-                    .onChanged { value in
-                        guard !isDisabled, imageRect.width > 0, imageRect.height > 0 else { return }
-                        let start = dragStart ?? clamp(value.startLocation, to: imageRect)
-                        dragStart = start
-                        let current = clamp(value.location, to: imageRect)
-                        selection = normalizedRect(from: start, to: current, in: imageRect)
-                    }
-                    .onEnded { _ in dragStart = nil }
-            )
-        }
-        .overlay {
-            if selection.isEmpty && !isDisabled {
-                Text("拖出水印区域")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .allowsHitTesting(false)
-            }
-        }
-    }
-
-    private func aspectFitRect(imageSize: CGSize, in container: CGSize) -> CGRect {
-        guard imageSize.width > 0, imageSize.height > 0, container.width > 0, container.height > 0 else { return .zero }
-        let scale = min(container.width / imageSize.width, container.height / imageSize.height)
-        let size = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
-        return CGRect(x: (container.width - size.width) / 2, y: (container.height - size.height) / 2, width: size.width, height: size.height)
-    }
-
-    private func clamp(_ point: CGPoint, to rect: CGRect) -> CGPoint {
-        CGPoint(x: min(max(point.x, rect.minX), rect.maxX), y: min(max(point.y, rect.minY), rect.maxY))
-    }
-
-    private func normalizedRect(from start: CGPoint, to end: CGPoint, in imageRect: CGRect) -> CGRect {
-        let rect = CGRect(
-            x: min(start.x, end.x), y: min(start.y, end.y),
-            width: abs(end.x - start.x), height: abs(end.y - start.y)
-        )
-        return CGRect(
-            x: (rect.minX - imageRect.minX) / imageRect.width,
-            y: (rect.minY - imageRect.minY) / imageRect.height,
-            width: rect.width / imageRect.width,
-            height: rect.height / imageRect.height
-        )
-    }
-
-    private func displayRect(_ normalized: CGRect, in imageRect: CGRect) -> CGRect {
-        CGRect(
-            x: imageRect.minX + normalized.minX * imageRect.width,
-            y: imageRect.minY + normalized.minY * imageRect.height,
-            width: normalized.width * imageRect.width,
-            height: normalized.height * imageRect.height
-        )
-    }
 }
