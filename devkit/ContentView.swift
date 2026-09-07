@@ -66,6 +66,8 @@ struct ContentView: View {
                     MediaCompressionView()
                 case .watermarkRemoval:
                     WatermarkRemovalView()
+                case .idPhoto:
+                    IDPhotoView()
                 }
             }
         }
@@ -88,6 +90,7 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
     case webPConversion
     case mediaCompression
     case watermarkRemoval
+    case idPhoto
 
     var id: Self { self }
 
@@ -107,6 +110,8 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
             "媒体压缩"
         case .watermarkRemoval:
             "去除图片水印"
+        case .idPhoto:
+            "制作证件照"
         }
     }
 
@@ -126,6 +131,8 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
             "rectangle.compress.vertical"
         case .watermarkRemoval:
             "eraser"
+        case .idPhoto:
+            "person.crop.rectangle"
         }
     }
 }

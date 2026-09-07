@@ -244,6 +244,7 @@ struct DevKitTests {
             HomeFeatureSetting(feature: .webPConversion, isVisible: true),
             HomeFeatureSetting(feature: .mediaCompression, isVisible: true),
             HomeFeatureSetting(feature: .watermarkRemoval, isVisible: false),
+            HomeFeatureSetting(feature: .idPhoto, isVisible: true),
         ])
     }
 
@@ -261,6 +262,7 @@ struct DevKitTests {
             HomeFeatureSetting(feature: .webPConversion, isVisible: true),
             HomeFeatureSetting(feature: .mediaCompression, isVisible: true),
             HomeFeatureSetting(feature: .watermarkRemoval, isVisible: false),
+            HomeFeatureSetting(feature: .idPhoto, isVisible: true),
         ])
     }
 
@@ -487,7 +489,7 @@ struct DevKitTests {
 
         #expect(
             settings.map(\.feature)
-                == [.imageOverlay, .simulatorManagement, .appStoreRelease, .tinyPNG, .webPConversion, .mediaCompression, .watermarkRemoval]
+                == [.imageOverlay, .simulatorManagement, .appStoreRelease, .tinyPNG, .webPConversion, .mediaCompression, .watermarkRemoval, .idPhoto]
         )
     }
 

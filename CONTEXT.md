@@ -52,3 +52,8 @@ _Avoid_: Manual selection, preview viewport
 **Local repair**:
 The built-in processor learns a low-contrast stroke template from a repeated watermark on a uniform background. It supports dark strokes on light backgrounds and light strokes on dark backgrounds by complementing RGB during light-stroke repair, while retaining OCR on the original image. It matches that template across the image; occluded or edge-clipped matches require both repeated spatial offsets and visible stroke evidence. Within the stroke mask, agreeing unmasked neighbors provide the background; otherwise the processor reverses the shared translucent overlay. Source pixels outside the mask remain untouched. Processing is local, cancellable, automatic-only, and produces a new PNG without modifying the source file. Opaque occlusion and pre-JPEG image detail cannot be recovered exactly from a single image.
 _Avoid_: AI inpainting, original replacement
+
+# ID Photo
+
+**Person mask**:
+The local Vision person-segmentation mask preserves people, including clothing and soft hair edges. Non-person pixels are replaced with a solid red (default), blue, white, or light gray (#D9D9D9) background, or made transparent. All five outputs share one segmentation result and retain the orientation-corrected source dimensions. Transparent PNGs retain soft mask alpha; the preview checkerboard is not exported. This tool replaces backgrounds; it does not crop to a passport size or certify compliance with an issuing authority's photo rules. The source file remains unchanged.
