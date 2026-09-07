@@ -2,7 +2,7 @@ import AppKit
 import CoreGraphics
 import Vision
 
-enum WatermarkRemovalError: LocalizedError {
+nonisolated enum WatermarkRemovalError: LocalizedError {
     case invalidImage
     case cannotCreateBitmap
     case cannotEncodePNG
@@ -25,7 +25,7 @@ enum WatermarkRemovalError: LocalizedError {
     }
 }
 
-enum WatermarkRemovalProcessor {
+nonisolated enum WatermarkRemovalProcessor {
     private struct TextObservation {
         let numericToken: String?
         let boundingBox: CGRect
@@ -213,5 +213,5 @@ enum WatermarkRemovalProcessor {
 }
 
 private extension CGRect {
-    var area: CGFloat { max(0, width) * max(0, height) }
+    nonisolated var area: CGFloat { max(0, width) * max(0, height) }
 }

@@ -18,6 +18,23 @@ struct DevKitTests {
         )
     }
 
+    @Test @MainActor func simulatorShutdownCommandDoesNotBlockCallingThread() {
+        let commandStarted = DispatchSemaphore(value: 0)
+        let manager = SimulatorManager { arguments, _ in
+            #expect(arguments == ["shutdown", "test-device"])
+            commandStarted.signal()
+            Thread.sleep(forTimeInterval: 0.35)
+            return true
+        }
+
+        let start = ContinuousClock.now
+        manager.shutdownDevice(udid: "test-device")
+        let elapsed = start.duration(to: .now)
+
+        #expect(elapsed < .milliseconds(100))
+        #expect(commandStarted.wait(timeout: .now() + 1) == .success)
+    }
+
     @Test func compositeImageRetainsBottomImagePixelSize() throws {
         let bottomImage = makeImage(width: 40, height: 20, color: .red)
         let topImage = makeImage(width: 10, height: 10, color: .blue)
@@ -459,12 +476,18 @@ struct DevKitTests {
 
     @Test func watermarkProcessingRunsOffTheMainActor() async throws {
         let data = try WatermarkRemovalProcessor.pngData(for: makeWatermarkDocument(includeWatermarks: true))
-        let ranOnMainThread = try await Task.detached {
-            let onMainThread = Thread.isMainThread
-            let image = try #require(NSImage(data: data))
-            _ = try WatermarkRemovalProcessor.removeDetectedWatermarks(from: image)
-            return onMainThread
-        }.value
+        let ranOnMainThread = try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let onMainThread = Thread.isMainThread
+                    let image = try #require(NSImage(data: data))
+                    _ = try WatermarkRemovalProcessor.removeDetectedWatermarks(from: image)
+                    continuation.resume(returning: onMainThread)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
         #expect(!ranOnMainThread)
     }
 

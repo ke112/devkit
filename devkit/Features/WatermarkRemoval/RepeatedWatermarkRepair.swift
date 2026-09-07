@@ -1,6 +1,6 @@
 import AppKit
 
-enum RepeatedWatermarkRepair {
+nonisolated enum RepeatedWatermarkRepair {
     private struct Template {
         let width: Int
         let height: Int

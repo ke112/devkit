@@ -7,7 +7,7 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct ImagePixelSize: Equatable {
+nonisolated struct ImagePixelSize: Equatable, Sendable {
     let width: Int
     let height: Int
 
@@ -16,7 +16,7 @@ struct ImagePixelSize: Equatable {
     }
 }
 
-enum ImageBackingScale: Double, CaseIterable, Identifiable {
+nonisolated enum ImageBackingScale: Double, CaseIterable, Identifiable, Sendable {
     case one = 1
     case oneAndHalf = 1.5
     case two = 2
@@ -31,12 +31,12 @@ enum ImageBackingScale: Double, CaseIterable, Identifiable {
     }
 }
 
-struct TopImageTransform: Equatable {
+nonisolated struct TopImageTransform: Equatable, Sendable {
     var scale: CGFloat = 1
     var offset: CGSize = .zero
 }
 
-struct CompositeImageLayout: Equatable {
+nonisolated struct CompositeImageLayout: Equatable, Sendable {
     let logicalBounds: CGRect
     let bottomRect: CGRect
     let topRect: CGRect
@@ -64,7 +64,7 @@ struct CompositeImageLayout: Equatable {
     }
 }
 
-struct CompositeEdgeAlignment: Equatable {
+nonisolated struct CompositeEdgeAlignment: Equatable, Sendable {
     let left: Bool
     let right: Bool
     let top: Bool
@@ -75,7 +75,7 @@ struct CompositeEdgeAlignment: Equatable {
     }
 }
 
-enum CompositeImageOutputLimits {
+nonisolated enum CompositeImageOutputLimits {
     static let maximumDimension = 16_384
     static let maximumPixelCount = 64_000_000
 
@@ -92,7 +92,7 @@ enum CompositeImageOutputLimits {
     }
 }
 
-enum CompositeImageRenderer {
+nonisolated enum CompositeImageRenderer {
     static func pixelSize(for image: NSImage) throws -> ImagePixelSize {
         guard let cgImage = image.cgImage(
             forProposedRect: nil,
@@ -275,6 +275,7 @@ enum CompositeImageRenderer {
         topBackingScale: CGFloat = 1,
         transform: TopImageTransform = TopImageTransform()
     ) throws -> Data {
+        try Task.checkCancellation()
         guard let bottomCGImage = bottomImage.cgImage(
             forProposedRect: nil,
             context: nil,
@@ -289,6 +290,7 @@ enum CompositeImageRenderer {
         ) else {
             throw RenderError.invalidTopImage
         }
+        try Task.checkCancellation()
 
         let layout = layout(
             bottomSize: ImagePixelSize(
@@ -337,6 +339,7 @@ enum CompositeImageRenderer {
         )
         context.imageInterpolation = .high
 
+        try Task.checkCancellation()
         draw(
             bottomCGImage,
             in: pixelRect(
@@ -347,6 +350,7 @@ enum CompositeImageRenderer {
             operation: .copy,
             opacity: 1
         )
+        try Task.checkCancellation()
         draw(
             topCGImage,
             in: pixelRect(
@@ -359,6 +363,7 @@ enum CompositeImageRenderer {
         )
 
         bitmap.size = layout.logicalBounds.size
+        try Task.checkCancellation()
         guard let data = bitmap.representation(using: .png, properties: [:]) else {
             throw RenderError.cannotEncodePNG
         }

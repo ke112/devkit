@@ -253,13 +253,16 @@ final class MediaImageCompressor: @unchecked Sendable {
         guard let enumerator = FileManager.default.enumerator(
             at: directory, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]
         ) else { return [] }
-        return enumerator.compactMap { value in
-            guard let url = value as? URL, Self.isSupportedImage(url) else { return nil }
+        var images: [MediaCollectedImage] = []
+        for case let url as URL in enumerator {
+            if Task.isCancelled { break }
+            guard Self.isSupportedImage(url) else { continue }
             let relativeComponents = url.deletingLastPathComponent().standardizedFileURL.pathComponents
                 .dropFirst(root.standardizedFileURL.pathComponents.count)
             let relativeDir = relativeComponents.isEmpty ? nil : relativeComponents.joined(separator: "/")
-            return MediaCollectedImage(url: url, relativeDir: relativeDir)
+            images.append(MediaCollectedImage(url: url, relativeDir: relativeDir))
         }
+        return images
     }
 
     nonisolated private func makeOutputDirectory(batch: URL, relativeDir: String?) throws -> URL {

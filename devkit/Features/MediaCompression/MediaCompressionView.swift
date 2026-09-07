@@ -2,6 +2,11 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+nonisolated private enum MediaCollectedInputs: Sendable {
+    case images([MediaCollectedImage])
+    case videos([MediaCollectedVideo])
+}
+
 struct MediaCompressionView: View {
     @Environment(\.dismiss) private var dismiss
 
@@ -13,6 +18,7 @@ struct MediaCompressionView: View {
     @State private var videoPreset: MediaVideoPreset = .medium
     @State private var outputDirectory = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
     @State private var isRunning = false
+    @State private var isScanning = false
     @State private var isDropTargeted = false
     @State private var progress = 0.0
     @State private var message = "拖入图片、视频或文件夹，或点击下方按钮选择。"
@@ -20,6 +26,7 @@ struct MediaCompressionView: View {
     @State private var showFileNotFound = false
     @State private var showLeaveConfirmation = false
     @State private var worker: Task<Void, Never>?
+    @State private var scanWorker: Task<Void, Never>?
 
     private let imageCompressor = MediaImageCompressor()
     private let videoCompressor = MediaVideoCompressor()
@@ -34,7 +41,7 @@ struct MediaCompressionView: View {
             }
             .pickerStyle(.segmented)
             .frame(width: 220)
-            .disabled(isRunning)
+            .disabled(isRunning || isScanning)
 
             dropArea
             settings
@@ -60,6 +67,7 @@ struct MediaCompressionView: View {
         }
         .onDisappear {
             if isRunning { worker?.cancel() }
+            scanWorker?.cancel()
         }
         .sheet(item: $previewItem) { item in
             MediaCompressionPreview(item: item)
@@ -187,9 +195,9 @@ struct MediaCompressionView: View {
                 outputDirectory = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
                 message = "已重置为默认设置。"
             }
-            .disabled(isRunning)
+            .disabled(isRunning || isScanning)
         }
-        .disabled(isRunning)
+        .disabled(isRunning || isScanning)
     }
 
     private func settingField(title: String, suffix: String, value: Binding<String>, placeholder: String) -> some View {
@@ -221,7 +229,7 @@ struct MediaCompressionView: View {
                 } label: {
                     Label("清空列表", systemImage: "trash")
                 }
-                .disabled(isRunning)
+                .disabled(isRunning || isScanning)
             }
         }
     }
@@ -233,7 +241,7 @@ struct MediaCompressionView: View {
             } label: {
                 Label("选择文件或文件夹", systemImage: "folder")
             }
-            .disabled(isRunning)
+            .disabled(isRunning || isScanning)
 
             Button {
                 start()
@@ -241,7 +249,14 @@ struct MediaCompressionView: View {
                 Label(mode == .image ? "开始压缩" : "开始压缩", systemImage: "arrow.down.circle")
             }
             .buttonStyle(.borderedProminent)
-            .disabled(currentTaskCount == 0 || isRunning)
+            .disabled(currentTaskCount == 0 || isRunning || isScanning)
+
+            if isScanning {
+                ProgressView()
+                    .controlSize(.small)
+                Text("正在扫描文件...")
+                    .foregroundStyle(.secondary)
+            }
 
             if isRunning {
                 Button {
@@ -367,20 +382,48 @@ struct MediaCompressionView: View {
     private var currentTaskCount: Int { mode == .image ? imageTasks.count : videoTasks.count }
 
     private func append(_ urls: [URL]) {
-        if mode == .image {
-            let existing = Set(imageTasks.map { $0.sourceURL.standardizedFileURL.path })
-            let items = imageCompressor.collectImages(from: urls)
-                .filter { !existing.contains($0.url.standardizedFileURL.path) }
-                .map { MediaImageTask(sourceURL: $0.url, relativeDir: $0.relativeDir) }
-            imageTasks.append(contentsOf: items)
-            message = items.isEmpty ? "未发现可压缩的图片文件。" : "已加入 \(items.count) 张图片。"
-        } else {
-            let existing = Set(videoTasks.map { $0.sourceURL.standardizedFileURL.path })
-            let items = videoCompressor.collectVideos(from: urls)
-                .filter { !existing.contains($0.url.standardizedFileURL.path) }
-                .map { MediaVideoTask(sourceURL: $0.url, relativeDir: $0.relativeDir) }
-            videoTasks.append(contentsOf: items)
-            message = items.isEmpty ? "未发现可压缩的视频文件。" : "已加入 \(items.count) 个视频。"
+        guard !urls.isEmpty, !isRunning, !isScanning else { return }
+        isScanning = true
+        message = "正在扫描文件..."
+        let selectedMode = mode
+        let existingPaths = selectedMode == .image
+            ? Set(imageTasks.map { $0.sourceURL.standardizedFileURL.path })
+            : Set(videoTasks.map { $0.sourceURL.standardizedFileURL.path })
+        let imageCompressor = imageCompressor
+        let videoCompressor = videoCompressor
+        let collector = Task.detached(priority: .userInitiated) {
+            switch selectedMode {
+            case .image:
+                return MediaCollectedInputs.images(imageCompressor.collectImages(from: urls))
+            case .video:
+                return MediaCollectedInputs.videos(videoCompressor.collectVideos(from: urls))
+            }
+        }
+        scanWorker = Task { @MainActor in
+            let result = await withTaskCancellationHandler {
+                await collector.value
+            } onCancel: {
+                collector.cancel()
+            }
+            guard !Task.isCancelled else {
+                return
+            }
+            switch result {
+            case .images(let collected):
+                let items = collected
+                    .filter { !existingPaths.contains($0.url.standardizedFileURL.path) }
+                    .map { MediaImageTask(sourceURL: $0.url, relativeDir: $0.relativeDir) }
+                imageTasks.append(contentsOf: items)
+                message = items.isEmpty ? "未发现可压缩的图片文件。" : "已加入 \(items.count) 张图片。"
+            case .videos(let collected):
+                let items = collected
+                    .filter { !existingPaths.contains($0.url.standardizedFileURL.path) }
+                    .map { MediaVideoTask(sourceURL: $0.url, relativeDir: $0.relativeDir) }
+                videoTasks.append(contentsOf: items)
+                message = items.isEmpty ? "未发现可压缩的视频文件。" : "已加入 \(items.count) 个视频。"
+            }
+            isScanning = false
+            scanWorker = nil
         }
     }
 

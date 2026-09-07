@@ -21,6 +21,7 @@ class SimulatorManager: ObservableObject, ErrorHandler {
 
     private var timer: Timer?
     private var simctlExecutablePath: String?
+    private let simctlCommandOverride: (([String], Double) -> Bool)?
     @Published private(set) var isOperating = false
     private var isRefreshing = false
     private var refreshTask: DispatchWorkItem?
@@ -40,6 +41,10 @@ class SimulatorManager: ObservableObject, ErrorHandler {
     @Published var deletingRuntimeIncludesRuntime: Bool = false
     @Published var operatingDeviceUDID: String? = nil
     @Published var operatingDeviceAction: DeviceOperationKind? = nil
+
+    init(simctlCommandOverride: (([String], Double) -> Bool)? = nil) {
+        self.simctlCommandOverride = simctlCommandOverride
+    }
 
     /// 设备分组模型
     struct DeviceGroup: Identifiable {
@@ -1060,24 +1065,15 @@ class SimulatorManager: ObservableObject, ErrorHandler {
             return
         }
 
-        isOperating = true
-        operatingDeviceUDID = udid
-        operatingDeviceAction = .booting
-
-        // 立即更新本地状态
-        updateDeviceState(udid: udid, to: "Booted")
-
-        // 执行实际操作
-        executeSimctlCommand(arguments: ["boot", udid])
-
-        // 等待启动完成
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            self.openSimulatorApp()
-            self.refreshDevices()
-            self.isOperating = false
-            self.operatingDeviceUDID = nil
-            self.operatingDeviceAction = nil
-        }
+        performDevicePowerOperation(
+            udid: udid,
+            action: .booting,
+            arguments: ["boot", udid],
+            optimisticState: "Booted",
+            failureState: "Shutdown",
+            completionDelay: 2,
+            opensSimulatorOnSuccess: true
+        )
     }
 
     /// 关闭设备
@@ -1088,22 +1084,58 @@ class SimulatorManager: ObservableObject, ErrorHandler {
             return
         }
 
+        performDevicePowerOperation(
+            udid: udid,
+            action: .shuttingDown,
+            arguments: ["shutdown", udid],
+            optimisticState: "Shutdown",
+            failureState: "Booted",
+            completionDelay: 1,
+            opensSimulatorOnSuccess: false
+        )
+    }
+
+    private func performDevicePowerOperation(
+        udid: String,
+        action: DeviceOperationKind,
+        arguments: [String],
+        optimisticState: String,
+        failureState: String,
+        completionDelay: TimeInterval,
+        opensSimulatorOnSuccess: Bool
+    ) {
         isOperating = true
         operatingDeviceUDID = udid
-        operatingDeviceAction = .shuttingDown
+        operatingDeviceAction = action
+        updateDeviceState(udid: udid, to: optimisticState)
 
-        // 立即更新本地状态
-        updateDeviceState(udid: udid, to: "Shutdown")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let succeeded = self.executeSimctlCommand(arguments: arguments)
 
-        // 执行实际操作
-        executeSimctlCommand(arguments: ["shutdown", udid])
+            DispatchQueue.main.asyncAfter(deadline: .now() + completionDelay) { [weak self] in
+                guard let self,
+                      self.operatingDeviceUDID == udid,
+                      self.operatingDeviceAction == action else { return }
 
-        // 等待关闭完成
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            self.refreshDevices()
-            self.isOperating = false
-            self.operatingDeviceUDID = nil
-            self.operatingDeviceAction = nil
+                if succeeded {
+                    if opensSimulatorOnSuccess {
+                        self.openSimulatorApp()
+                    }
+                } else {
+                    self.updateDeviceState(udid: udid, to: failureState)
+                    self.handleError(
+                        SimulatorError.commandExecutionFailed(
+                            action == .booting ? "模拟器启动失败，请重试" : "模拟器关闭失败，请重试"
+                        )
+                    )
+                }
+
+                self.isOperating = false
+                self.operatingDeviceUDID = nil
+                self.operatingDeviceAction = nil
+                self.forceRefresh()
+            }
         }
     }
 
@@ -1307,6 +1339,9 @@ class SimulatorManager: ObservableObject, ErrorHandler {
     /// 执行xc命令（带超时保护）
     @discardableResult
     private func executeSimctlCommand(arguments: [String], timeoutSeconds: Double = 30.0) -> Bool {
+        if let simctlCommandOverride {
+            return simctlCommandOverride(arguments, timeoutSeconds)
+        }
         let process = Process()
         let timeout: Double = timeoutSeconds
 

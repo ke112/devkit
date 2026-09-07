@@ -180,7 +180,7 @@ struct ImageOverlayView: View {
 
             Task { @MainActor in
                 setImage(
-                    ImportedImage(name: "拖入的图片", image: image),
+                    ImportedImage(name: "拖入的图片", image: image, data: data),
                     for: layer
                 )
             }
@@ -202,7 +202,7 @@ struct ImageOverlayView: View {
                 errorMessage = "“\(url.lastPathComponent)”不是可读取的图片。"
                 return
             }
-            setImage(ImportedImage(name: url.lastPathComponent, image: image), for: layer)
+            setImage(ImportedImage(name: url.lastPathComponent, image: image, data: data), for: layer)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -357,6 +357,8 @@ private struct CompositePreview: View {
     @State private var isExporterPresented = false
     @State private var exportAlertTitle = ""
     @State private var exportAlertMessage: String?
+    @State private var isPreparingExport = false
+    @State private var exportTask: Task<Void, Never>?
 
     init(bottomImage: ImportedImage, topImage: ImportedImage) {
         self.bottomImage = bottomImage
@@ -532,6 +534,11 @@ private struct CompositePreview: View {
         } message: {
             Text(exportAlertMessage ?? "")
         }
+        .onDisappear {
+            exportTask?.cancel()
+            exportTask = nil
+            isPreparingExport = false
+        }
     }
 
     private var backingScaleMenu: some View {
@@ -692,10 +699,14 @@ private struct CompositePreview: View {
         Button {
             prepareExport()
         } label: {
-            Label("导出图片", systemImage: "square.and.arrow.down")
+            if isPreparingExport {
+                Label("正在生成", systemImage: "hourglass")
+            } else {
+                Label("导出图片", systemImage: "square.and.arrow.down")
+            }
         }
         .buttonStyle(.borderedProminent)
-        .disabled(outputValidationMessage != nil)
+        .disabled(outputValidationMessage != nil || isPreparingExport)
     }
 
     private func previewCanvas(in size: CGSize) -> some View {
@@ -1106,21 +1117,49 @@ private struct CompositePreview: View {
     }
 
     private func prepareExport() {
-        do {
-            let data = try CompositeImageRenderer.pngData(
-                bottomImage: bottomImage.image,
-                topImage: topImage.image,
-                topOpacity: topImageOpacity / 100,
-                bottomBackingScale: bottomBackingScale.value,
-                topBackingScale: topBackingScale.value,
-                transform: topTransform
+        guard !isPreparingExport else { return }
+        isPreparingExport = true
+        let bottomData = bottomImage.data
+        let topData = topImage.data
+        let opacity = topImageOpacity / 100
+        let bottomScale = bottomBackingScale.value
+        let topScale = topBackingScale.value
+        let transform = topTransform
+        let worker = Task.detached(priority: .userInitiated) {
+            guard let bottomImage = NSImage(data: bottomData),
+                  let topImage = NSImage(data: topData) else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            return try CompositeImageRenderer.pngData(
+                bottomImage: bottomImage,
+                topImage: topImage,
+                topOpacity: opacity,
+                bottomBackingScale: bottomScale,
+                topBackingScale: topScale,
+                transform: transform
             )
-            exportFilename = ImageOverlayExportName.make(for: Date())
-            exportDocument = PNGFileDocument(data: data)
-            isExporterPresented = true
-        } catch {
-            exportAlertTitle = "导出失败"
-            exportAlertMessage = error.localizedDescription
+        }
+        exportTask = Task { @MainActor in
+            defer {
+                exportTask = nil
+                isPreparingExport = false
+            }
+            do {
+                let data = try await withTaskCancellationHandler {
+                    try await worker.value
+                } onCancel: {
+                    worker.cancel()
+                }
+                guard !Task.isCancelled else { return }
+                exportFilename = ImageOverlayExportName.make(for: Date())
+                exportDocument = PNGFileDocument(data: data)
+                isExporterPresented = true
+            } catch is CancellationError {
+                return
+            } catch {
+                exportAlertTitle = "导出失败"
+                exportAlertMessage = error.localizedDescription
+            }
         }
     }
 
@@ -1203,6 +1242,7 @@ private final class WindowGroupDragView: NSView {
 private struct ImportedImage {
     let name: String
     let image: NSImage
+    let data: Data
 }
 
 enum ImageOverlayExportName {

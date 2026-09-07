@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct WatermarkRemovalView: View {
     @State private var importedImage: WatermarkImportedImage?
     @State private var processedImage: NSImage?
+    @State private var processedPNGData: Data?
     @State private var showsOriginal = false
     @State private var isImporterPresented = false
     @State private var isDropTargeted = false
@@ -162,6 +163,7 @@ struct WatermarkRemovalView: View {
 
                     Button {
                         processedImage = nil
+                        processedPNGData = nil
                         showsOriginal = false
                         detectedRegionCount = 0
                     } label: {
@@ -171,12 +173,11 @@ struct WatermarkRemovalView: View {
                     .disabled(isProcessing || processedImage == nil)
 
                     Button {
-                        guard let processedImage,
-                              let data = try? WatermarkRemovalProcessor.pngData(for: processedImage) else {
+                        guard let processedPNGData else {
                             errorMessage = WatermarkRemovalError.cannotEncodePNG.localizedDescription
                             return
                         }
-                        exportDocument = PNGFileDocument(data: data)
+                        exportDocument = PNGFileDocument(data: processedPNGData)
                         exportFilename = "去水印-\(URL(fileURLWithPath: importedImage.name).deletingPathExtension().lastPathComponent)"
                         isExporterPresented = true
                     } label: {
@@ -189,6 +190,7 @@ struct WatermarkRemovalView: View {
                         self.importedImage = nil
                         processingTask?.cancel()
                         processedImage = nil
+                        processedPNGData = nil
                         showsOriginal = false
                         detectedRegionCount = 0
                     } label: {
@@ -218,6 +220,7 @@ struct WatermarkRemovalView: View {
             processingID = UUID()
             isProcessing = false
             processedImage = nil
+            processedPNGData = nil
             showsOriginal = false
             detectedRegionCount = 0
         } catch {
@@ -255,6 +258,7 @@ struct WatermarkRemovalView: View {
                 guard !Task.isCancelled, processingID == jobID else { return }
                 guard let image = NSImage(data: data) else { throw WatermarkRemovalError.invalidImage }
                 processedImage = image
+                processedPNGData = data
                 showsOriginal = false
                 detectedRegionCount = regionCount
             } catch is CancellationError {
