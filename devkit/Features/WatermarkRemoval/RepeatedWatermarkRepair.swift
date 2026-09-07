@@ -32,35 +32,52 @@ enum RepeatedWatermarkRepair {
         ), let data = context.data else { throw WatermarkRemovalError.cannotCreateBitmap }
         context.draw(cgImage, in: bounds)
         let source = Array(UnsafeBufferPointer(start: data.assumingMemoryBound(to: UInt8.self), count: width * height * 4))
-        var luminance = [Int](repeating: 0, count: width * height)
-        for index in luminance.indices {
-            luminance[index] = (Int(source[index * 4]) + Int(source[index * 4 + 1]) + Int(source[index * 4 + 2])) / 3
-        }
-        let contrast = try localContrast(luminance, width: width, height: height)
         var output = source
-        var repairedCount = 0
-        for group in regionGroups where group.count >= 3 {
+        var repairedRegions: [CGRect] = []
+        // Complementing RGB maps a white translucent overlay to the same black-overlay
+        // model. OCR still uses the original image; alpha and unmasked pixels stay intact.
+        for inverted in [false, true] {
             try Task.checkCancellation()
-            let templates = group.compactMap {
-                makeTemplate(rect: $0.insetBy(dx: -12, dy: -8).integral.intersection(bounds),
-                             source: source, luminance: luminance, contrast: contrast, width: width)
-            }.sorted { $0.backgroundCoverage > $1.backgroundCoverage }
-            guard let template = templates.first else { continue }
-            let matches = try findMatches(template: template, source: source, contrast: contrast, width: width, height: height)
-            guard matches.count >= 3 else { continue }
-            for match in matches {
-                try Task.checkCancellation()
-                apply(template: template, match: match, source: source, output: &output, width: width, height: height)
+            let workingSource = inverted ? source.enumerated().map { index, value in
+                index % 4 == 3 ? value : 255 - value
+            } : source
+            var luminance = [Int](repeating: 0, count: width * height)
+            for index in luminance.indices {
+                luminance[index] = (Int(workingSource[index * 4]) + Int(workingSource[index * 4 + 1]) + Int(workingSource[index * 4 + 2])) / 3
             }
-            repairedCount += matches.count
+            let contrast = try localContrast(luminance, width: width, height: height)
+            var workingOutput = workingSource
+            for group in regionGroups where group.count >= 3 {
+                try Task.checkCancellation()
+                let templates = group.compactMap {
+                    makeTemplate(rect: $0.insetBy(dx: -12, dy: -8).integral.intersection(bounds),
+                                 source: workingSource, luminance: luminance, contrast: contrast, width: width)
+                }.sorted { $0.backgroundCoverage > $1.backgroundCoverage }
+                guard let template = templates.first else { continue }
+                let matches = try findMatches(template: template, source: workingSource, contrast: contrast, width: width, height: height)
+                guard matches.count >= 3 else { continue }
+                for match in matches {
+                    try Task.checkCancellation()
+                    apply(template: template, match: match, source: workingSource, output: &workingOutput, width: width, height: height)
+                    var region = CGRect(x: match.x, y: match.y, width: template.width, height: template.height).intersection(bounds)
+                    // Different OCR numeric fragments can identify the same watermark.
+                    for index in repairedRegions.indices.reversed() where repairedRegions[index].intersects(region) {
+                        region = region.union(repairedRegions.remove(at: index))
+                    }
+                    repairedRegions.append(region)
+                }
+            }
+            for index in output.indices where workingOutput[index] != workingSource[index] {
+                output[index] = inverted ? 255 - workingOutput[index] : workingOutput[index]
+            }
         }
-        guard repairedCount > 0 else { throw WatermarkRemovalError.unsupportedBackground }
+        guard !repairedRegions.isEmpty else { throw WatermarkRemovalError.unsupportedBackground }
         try Task.checkCancellation()
         output.withUnsafeBytes { bytes in
             if let baseAddress = bytes.baseAddress { data.copyMemory(from: baseAddress, byteCount: output.count) }
         }
         guard let result = context.makeImage() else { throw WatermarkRemovalError.cannotCreateBitmap }
-        return .init(image: NSImage(cgImage: result, size: image.size), detectedRegionCount: repairedCount)
+        return .init(image: NSImage(cgImage: result, size: image.size), detectedRegionCount: repairedRegions.count)
     }
 
     private static func localContrast(_ values: [Int], width: Int, height: Int) throws -> [Int] {
@@ -162,8 +179,12 @@ enum RepeatedWatermarkRepair {
         guard template.width <= width, template.height <= height else { return [] }
         func score(x: Int, y: Int, minimumMatchRatio: Double = 0.65) -> Double {
             var matched = 0
+            var visible = 0
             var difference = 0.0
-            for (number, feature) in template.features.enumerated() {
+            for feature in template.features {
+                guard x + feature.x >= 0, x + feature.x < width,
+                      y + feature.y >= 0, y + feature.y < height else { continue }
+                visible += 1
                 let index = (y + feature.y) * width + x + feature.x
                 let value = contrast[index]
                 let pixel = index * 4
@@ -176,10 +197,11 @@ enum RepeatedWatermarkRepair {
                 } else {
                     difference += 1
                 }
-                if number == 15, matched < 5 { return 0 }
+                if visible == 16, matched < 5 { return 0 }
             }
-            guard Double(matched) / Double(template.features.count) >= minimumMatchRatio else { return 0 }
-            return 1 - difference / Double(template.features.count)
+            guard visible >= 8,
+                  Double(matched) / Double(visible) >= minimumMatchRatio else { return 0 }
+            return 1 - difference / Double(visible)
         }
         var candidates: [Match] = []
         for y in 0...(height - template.height) {
@@ -221,35 +243,43 @@ enum RepeatedWatermarkRepair {
             }
         }
         let repeatedOffsets = displacements.filter { $0.count >= 3 }.sorted { $0.count > $1.count }.prefix(8)
-        var predictions: [(x: Int, y: Int, neighbors: Set<Int>)] = []
-        for (index, match) in matches.enumerated() {
-            for offset in repeatedOffsets {
-                for sign in [-1.0, 1.0] {
-                    let x = match.x + Int((offset.x * sign).rounded())
-                    let y = match.y + Int((offset.y * sign).rounded())
-                    guard x >= 0, x + template.width <= width, y >= 0, y + template.height <= height,
-                          !matches.contains(where: { abs($0.x - x) < template.width / 2 + 1 && abs($0.y - y) < template.height / 2 + 1 }) else { continue }
-                    if let prediction = predictions.firstIndex(where: { abs($0.x - x) <= 4 && abs($0.y - y) <= 4 }) {
-                        predictions[prediction].neighbors.insert(index)
-                    } else {
-                        predictions.append((x, y, [index]))
+        // Confirmed edge matches provide the second neighbor needed by clipped corners.
+        // Both passes use offsets learned exclusively from the original full matches.
+        for _ in 0..<2 {
+            var predictions: [(x: Int, y: Int, neighbors: Set<Int>)] = []
+            for (index, match) in matches.enumerated() {
+                for offset in repeatedOffsets {
+                    for sign in [-1.0, 1.0] {
+                        let x = match.x + Int((offset.x * sign).rounded())
+                        let y = match.y + Int((offset.y * sign).rounded())
+                        guard x + template.width > 0, x < width, y + template.height > 0, y < height,
+                              !matches.contains(where: { abs($0.x - x) < template.width / 2 + 1 && abs($0.y - y) < template.height / 2 + 1 }) else { continue }
+                        if let prediction = predictions.firstIndex(where: { abs($0.x - x) <= 4 && abs($0.y - y) <= 4 }) {
+                            predictions[prediction].neighbors.insert(index)
+                        } else {
+                            predictions.append((x, y, [index]))
+                        }
                     }
                 }
             }
-        }
-        for prediction in predictions where prediction.neighbors.count >= 2 {
-            try Task.checkCancellation()
-            var best = Match(x: prediction.x, y: prediction.y, score: 0)
-            for y in max(0, prediction.y - 3)...min(height - template.height, prediction.y + 3) {
-                for x in max(0, prediction.x - 3)...min(width - template.width, prediction.x + 3) {
-                    let value = score(x: x, y: y, minimumMatchRatio: 0.4)
-                    if value > best.score { best = Match(x: x, y: y, score: value) }
+            let previousCount = matches.count
+            for prediction in predictions where prediction.neighbors.count >= 2 {
+                try Task.checkCancellation()
+                var best = Match(x: prediction.x, y: prediction.y, score: 0)
+                let clipped = prediction.x < 0 || prediction.y < 0
+                    || prediction.x + template.width > width || prediction.y + template.height > height
+                for y in max(1 - template.height, prediction.y - 3)...min(height - 1, prediction.y + 3) {
+                    for x in max(1 - template.width, prediction.x - 3)...min(width - 1, prediction.x + 3) {
+                        let value = score(x: x, y: y, minimumMatchRatio: clipped ? 0.65 : 0.4)
+                        if value > best.score { best = Match(x: x, y: y, score: value) }
+                    }
+                }
+                if best.score >= (clipped ? 0.5 : 0.3),
+                   !matches.contains(where: { abs($0.x - best.x) < template.width / 2 + 1 && abs($0.y - best.y) < template.height / 2 + 1 }) {
+                    matches.append(best)
                 }
             }
-            if best.score >= 0.3,
-               !matches.contains(where: { abs($0.x - best.x) < template.width / 2 + 1 && abs($0.y - best.y) < template.height / 2 + 1 }) {
-                matches.append(best)
-            }
+            if matches.count == previousCount { break }
         }
         return matches
     }
@@ -266,6 +296,7 @@ enum RepeatedWatermarkRepair {
                 guard nearbyAlpha > 0 else { continue }
                 let pixelX = match.x + x
                 let pixelY = match.y + y
+                guard pixelX >= 0, pixelX < width, pixelY >= 0, pixelY < height else { continue }
                 let index = (pixelY * width + pixelX) * 4
                 guard source[index + 3] == 255 else { continue }
                 // Interpolate only across locally agreeing, unmasked pairs. Otherwise undo the

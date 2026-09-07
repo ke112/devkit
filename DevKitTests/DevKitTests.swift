@@ -300,14 +300,14 @@ struct DevKitTests {
         #expect(changedContentPixels == 0)
     }
 
-    private func makeWatermarkDocument(includeWatermarks: Bool, overlappingContent: Bool = false) -> NSImage {
-        let image = makeImage(width: 640, height: 800, color: .white)
+    private func makeWatermarkDocument(includeWatermarks: Bool, overlappingContent: Bool = false, darkBackground: Bool = false) -> NSImage {
+        let image = makeImage(width: 640, height: 800, color: darkBackground ? NSColor(white: 0.1, alpha: 1) : .white)
         let bitmap = image.representations[0] as! NSBitmapImageRep
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
         defer { NSGraphicsContext.restoreGraphicsState() }
         let bodyAttributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 18), .foregroundColor: NSColor.black,
+            .font: NSFont.systemFont(ofSize: 18), .foregroundColor: darkBackground ? NSColor.white : NSColor.black,
         ]
         ("Quarterly report" as NSString).draw(at: CGPoint(x: 30, y: 750), withAttributes: bodyAttributes)
         for (index, y) in [620, 390, 160].enumerated() {
@@ -322,7 +322,7 @@ struct DevKitTests {
                 if includeWatermarks {
                     ("6989" as NSString).draw(at: CGPoint(x: x, y: y), withAttributes: [
                         .font: NSFont.monospacedSystemFont(ofSize: 26, weight: .regular),
-                        .foregroundColor: NSColor.black.withAlphaComponent(0.25),
+                        .foregroundColor: darkBackground ? NSColor.white.withAlphaComponent(0.035) : NSColor.black.withAlphaComponent(0.25),
                     ])
                 }
             }
@@ -330,9 +330,10 @@ struct DevKitTests {
         return image
     }
 
-    @Test func automaticWatermarkRemovalRestoresContentUnderTranslucentStrokes() throws {
-        let clean = makeWatermarkDocument(includeWatermarks: false, overlappingContent: true)
-        let marked = makeWatermarkDocument(includeWatermarks: true, overlappingContent: true)
+    @Test(arguments: [false, true])
+    func automaticWatermarkRemovalRestoresContentUnderTranslucentStrokes(darkBackground: Bool) throws {
+        let clean = makeWatermarkDocument(includeWatermarks: false, overlappingContent: true, darkBackground: darkBackground)
+        let marked = makeWatermarkDocument(includeWatermarks: true, overlappingContent: true, darkBackground: darkBackground)
         let result = try WatermarkRemovalProcessor.removeDetectedWatermarks(from: marked)
         let original = try #require(NSBitmapImageRep(data: WatermarkRemovalProcessor.pngData(for: marked)))
         let expected = try #require(NSBitmapImageRep(data: WatermarkRemovalProcessor.pngData(for: clean)))
@@ -380,6 +381,51 @@ struct DevKitTests {
             #expect(output.colorAt(x: Int(region.minX) + 3, y: 25) == output.colorAt(x: 0, y: 0))
         }
         #expect(try WatermarkRemovalProcessor.pngData(for: image) == before)
+    }
+
+    @Test func watermarkRepairHandlesClippedLightStrokesWithoutErasingEmptyGridLocations() throws {
+        let image = makeImage(width: 400, height: 260, color: NSColor(white: 0.1, alpha: 1))
+        let bitmap = try #require(image.representations.first as? NSBitmapImageRep)
+        let cleanData = try WatermarkRemovalProcessor.pngData(for: image)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+        var regions: [CGRect] = []
+        for y in [30, 100, 170, 240] {
+            for x in [-25, 85, 195, 305] {
+                if x == 305 && y == 30 { continue }
+                ("6989" as NSString).draw(at: CGPoint(x: x, y: y), withAttributes: [
+                    .font: NSFont.monospacedSystemFont(ofSize: 26, weight: .regular),
+                    .foregroundColor: NSColor.white.withAlphaComponent(0.035),
+                ])
+                regions.append(CGRect(x: x, y: 260 - y - 35, width: 65, height: 35))
+            }
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        // A lone bright content pixel at an otherwise empty predicted location is not a watermark.
+        bitmap.setColor(.white, atX: 325, y: 215)
+        let original = try #require(NSBitmapImageRep(data: WatermarkRemovalProcessor.pngData(for: image)))
+        let expected = try #require(NSBitmapImageRep(data: cleanData))
+        let result = try WatermarkRemovalProcessor.repairRepeatedWatermarks(from: image, regionGroups: [regions, regions])
+        let output = try #require(NSBitmapImageRep(data: WatermarkRemovalProcessor.pngData(for: result.image)))
+        var residualPixels = 0
+        var residualLocations: [String] = []
+        var changedContentPixels = 0
+        for y in 0..<260 {
+            for x in 0..<400 {
+                let before = try #require(original.colorAt(x: x, y: y))
+                let after = try #require(output.colorAt(x: x, y: y))
+                let target = try #require(expected.colorAt(x: x, y: y))
+                if before == target || (x == 325 && y == 215) {
+                    if after != before { changedContentPixels += 1 }
+                } else if abs(after.redComponent - target.redComponent) > 2.0 / 255 {
+                    residualPixels += 1
+                    if residualLocations.count < 10 { residualLocations.append("\(x),\(y)") }
+                }
+            }
+        }
+        #expect(result.detectedRegionCount == 15)
+        #expect(residualPixels == 0, "\(residualLocations)")
+        #expect(changedContentPixels == 0)
     }
 
     @Test func watermarkRepairRejectsOpaqueTextAndUncertainBackground() throws {
