@@ -697,6 +697,71 @@ struct DevKitTests {
         )
     }
 
+    @Test func tinyPNGSelectionCollectsMultipleRootsAndDeduplicatesImages() async throws {
+        let firstDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "DevKitTests-TinyPNG-Multi-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let nestedDirectory = firstDirectory.appending(path: "nested", directoryHint: .isDirectory)
+        let secondDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "DevKitTests-TinyPNG-Second-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: nestedDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondDirectory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: firstDirectory)
+            try? FileManager.default.removeItem(at: secondDirectory)
+        }
+
+        try Data([0]).write(to: firstDirectory.appending(path: "one.png"))
+        try Data([0]).write(to: nestedDirectory.appending(path: "two.jpg"))
+        try Data([0]).write(to: secondDirectory.appending(path: "three.webp"))
+
+        let model = TinyPNGModel()
+        #expect(model.select(urls: [firstDirectory, nestedDirectory, secondDirectory]))
+        while model.isScanning {
+            await Task.yield()
+        }
+
+        #expect(model.selectedURLs.count == 2)
+        #expect(model.imageItems.count == 3)
+        #expect(model.selectionSummary?.imageCount == 3)
+        #expect(Set(model.imageItems.map(\.relativePath)) == ["one.png", "nested/two.jpg", "three.webp"])
+        #expect(Set(model.imageItems.map(\.id.path)).count == 3)
+    }
+
+    @Test func repeatedImageSelectionsAccumulateAcrossPendingScans() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "DevKitTests-Append-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = directory.appending(path: "first.png")
+        let second = directory.appending(path: "second.jpg")
+        let third = directory.appending(path: "third.png")
+        for url in [first, second, third] { try Data([0]).write(to: url) }
+
+        let tiny = TinyPNGModel()
+        let webp = WebPConversionModel()
+        #expect(tiny.select(urls: [first]))
+        #expect(tiny.select(urls: [second, second]))
+        #expect(webp.select(urls: [first]))
+        #expect(webp.select(urls: [second, second]))
+        while tiny.isScanning || webp.isScanning { await Task.yield() }
+        #expect(Set(tiny.imageItems.map(\.id)) == Set([first, second]))
+        #expect(Set(webp.imageItems.map(\.id)) == Set([first, second]))
+        #expect(tiny.selectedURLs.count == 2)
+        #expect(webp.selectedURLs.count == 2)
+
+        #expect(tiny.select(urls: [third]))
+        #expect(webp.select(urls: [third]))
+        while tiny.isScanning || webp.isScanning { await Task.yield() }
+        #expect(tiny.imageItems.count == 3)
+        #expect(webp.imageItems.count == 3)
+        #expect(tiny.select(urls: [first]))
+        #expect(webp.select(urls: [first]))
+        #expect(tiny.alertMessage == nil)
+        #expect(webp.alertMessage == nil)
+        #expect(TinyPNGModel().selectedURLs.isEmpty)
+        #expect(WebPConversionModel().selectedURLs.isEmpty)
+    }
+
     @Test func tinyPNGProgressCountsCompletedAndSkippedImages() {
         let model = TinyPNGModel()
         model.selectionSummary = TinyPNGSelectionSummary(imageCount: 4, oversizedCount: 1)

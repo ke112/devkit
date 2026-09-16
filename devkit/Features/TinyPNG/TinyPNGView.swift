@@ -36,15 +36,15 @@ struct TinyPNGView: View {
 
             TinyPNGDropArea(isTargeted: $isDropTargeted)
             .dropDestination(for: URL.self) { urls, _ in
-                guard let url = urls.first else { return false }
-                return model.select(url: url)
+                guard !urls.isEmpty else { return false }
+                return model.select(urls: urls)
             } isTargeted: { targeted in
                 isDropTargeted = targeted
             }
 
             selectionSummary
 
-            if model.selectedURL != nil {
+            if !model.selectedURLs.isEmpty {
                 HStack(spacing: 12) {
                     Label("已选择 \(model.imageItems.count) 张图片", systemImage: "photo.stack")
                         .foregroundStyle(.secondary)
@@ -156,12 +156,12 @@ struct TinyPNGView: View {
         .fileImporter(
             isPresented: $isImporterPresented,
             allowedContentTypes: [.item, .folder, .image],
-            allowsMultipleSelection: false
+            allowsMultipleSelection: true
         ) { result in
             switch result {
             case .success(let urls):
-                if let url = urls.first {
-                    _ = model.select(url: url)
+                if !urls.isEmpty {
+                    _ = model.select(urls: urls)
                 }
             case .failure(let error):
                 model.showError(error.localizedDescription)
@@ -203,10 +203,10 @@ struct TinyPNGView: View {
 
     @ViewBuilder
     private var selectionSummary: some View {
-        if let selectedURL = model.selectedURL {
+        if !model.selectedURLs.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                Label(selectedURL.path, systemImage: model.selectionIsDirectory ? "folder" : "photo")
-                    .lineLimit(2)
+                Text(model.selectedURLs.map(\.path).joined(separator: "\n"))
+                    .lineLimit(3)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
 
@@ -261,7 +261,7 @@ private struct TinyPNGDropArea: View {
             Image(systemName: "arrow.down.doc")
                 .font(.system(size: 38, weight: .light))
                 .foregroundStyle(isTargeted ? Color.accentColor : .secondary)
-            Text("拖入图片或文件夹")
+            Text("拖入图片或文件夹，可一次拖入多个")
                 .font(.title3.weight(.semibold))
             Text("PNG、JPG、JPEG、WebP，单张上限 5 MB")
                 .font(.caption)
@@ -293,10 +293,10 @@ private struct TinyPNGStatusSheet: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("上传状态")
                         .font(.title2.bold())
-                    Text(model.selectedURL?.path ?? "")
+                    Text(model.selectedURLs.map(\.path).joined(separator: "\n"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .lineLimit(2)
                         .truncationMode(.middle)
                 }
 
@@ -676,7 +676,7 @@ final class TinyPNGModel {
     static let maximumMinimumCompressionSizeKB = Int(Int64.max / 1024)
     private static let minimumCompressionSizeKey = "tinypng.minimumCompressionSizeKB"
 
-    var selectedURL: URL?
+    var selectedURLs: [URL] = []
     var selectionSummary: TinyPNGSelectionSummary?
     var imageItems: [TinyPNGImageItem] = []
     var replaceOriginals = true
@@ -700,7 +700,8 @@ final class TinyPNGModel {
     var alertMessage: String?
     var outputDirectoryURL: URL?
 
-    private var scanWorker: Task<TinyPNGScanResult, Never>?
+    private var scanWorker: Task<[TinyPNGScanResult], Never>?
+    private var pendingScanURLs: [URL] = []
     private var activeSelectionToken = UUID()
     private var outputEventBuffer = ""
     private var processCancellation: StreamingProcessCancellation?
@@ -715,7 +716,7 @@ final class TinyPNGModel {
     }
 
     var canRun: Bool {
-        selectedURL != nil
+        !selectedURLs.isEmpty
             && (selectionSummary?.imageCount ?? 0) > 0
             && !isScanning
             && !isRunning
@@ -764,27 +765,31 @@ final class TinyPNGModel {
         )
     }
 
-    var selectionIsDirectory: Bool {
-        guard let selectedURL else { return false }
-        return TinyPNGInputScanner.isDirectory(selectedURL)
-    }
-
     @discardableResult
-    func select(url: URL) -> Bool {
+    func select(urls: [URL]) -> Bool {
         guard !isRunning else { return false }
+        let standardizedURLs = urls.map(\.standardizedFileURL)
+        let validURLs = standardizedURLs.filter(TinyPNGInputScanner.accepts(_:))
+        guard !validURLs.isEmpty else {
+            showError("请选择文件夹，或选择 PNG、JPG、JPEG、WebP 图片。")
+            return false
+        }
+        var knownRoots = Set((selectedURLs + pendingScanURLs).map(\.path))
+        let initiallyAcceptedURLs = validURLs.filter { knownRoots.insert($0.path).inserted }
+        let acceptedURLs = initiallyAcceptedURLs.filter { url in
+            !initiallyAcceptedURLs.contains { root in
+                root.path != url.path && url.path.hasPrefix(root.path + "/")
+            }
+        }
+        guard !acceptedURLs.isEmpty else {
+            return true
+        }
+
         scanWorker?.cancel()
         scanWorker = nil
         isScanning = false
         activeSelectionToken = UUID()
-        let standardizedURL = url.standardizedFileURL
-        guard TinyPNGInputScanner.accepts(standardizedURL) else {
-            showError("请选择文件夹，或选择 PNG、JPG、JPEG、WebP 图片。")
-            return false
-        }
-
-        selectedURL = standardizedURL
-        selectionSummary = nil
-        imageItems = []
+        pendingScanURLs.append(contentsOf: acceptedURLs)
         isScanning = true
         output = ""
         outputEventBuffer = ""
@@ -795,21 +800,16 @@ final class TinyPNGModel {
 
         let selectionToken = UUID()
         activeSelectionToken = selectionToken
-        let hasSecurityScope = standardizedURL.startAccessingSecurityScopedResource()
         let minimumCompressionBytes = minimumCompressionSizeBytes
+        // Include the previous pending batch when replacing an in-flight scan.
+        let scannedURLs = pendingScanURLs
         let worker = Task.detached(priority: .userInitiated) {
-            TinyPNGInputScanner.scan(standardizedURL)
+            scannedURLs.map { TinyPNGInputScanner.scan($0) }
         }
         scanWorker = worker
 
-        Task { @MainActor [weak self, standardizedURL, selectionToken, hasSecurityScope, worker] in
-            defer {
-                if hasSecurityScope {
-                    standardizedURL.stopAccessingSecurityScopedResource()
-                }
-            }
-
-            let result = await worker.value
+        Task { @MainActor [weak self, selectionToken, worker] in
+            let results = await worker.value
             guard let self,
                   self.activeSelectionToken == selectionToken,
                   !worker.isCancelled else {
@@ -817,28 +817,45 @@ final class TinyPNGModel {
             }
 
             scanWorker = nil
+            pendingScanURLs = []
             isScanning = false
-            guard !result.images.isEmpty else {
-                selectedURL = nil
-                selectionSummary = nil
-                imageItems = []
-                operationStatus = "未找到可压缩图片"
-                operationStatusSystemImage = "exclamationmark.triangle"
-                alertMessage = "所选路径中没有可压缩的 PNG、JPG、JPEG 或 WebP 图片。"
+            var knownPaths = Set(imageItems.map(\.id.path))
+            var appendedItems: [TinyPNGImageItem] = []
+            for (index, result) in results.enumerated() {
+                let inputURL = scannedURLs[index]
+                let previousCount = appendedItems.count
+                for image in result.images where knownPaths.insert(image.url.path).inserted {
+                    appendedItems.append(
+                        TinyPNGImageItem(
+                            id: image.url,
+                            relativePath: self.relativePath(for: image.url, inputURL: inputURL),
+                            byteCount: image.byteCount,
+                            status: self.shouldSkip(image.byteCount, minimumCompressionBytes: minimumCompressionBytes)
+                                ? .skipped
+                                : .waiting
+                        )
+                    )
+                }
+                if appendedItems.count > previousCount {
+                    selectedURLs.append(inputURL)
+                }
+            }
+
+            guard !appendedItems.isEmpty else {
+                operationStatus = selectedURLs.isEmpty ? "请选择图片或文件夹" : "已选择，等待开始"
+                operationStatusSystemImage = selectedURLs.isEmpty ? "photo.on.rectangle" : "checkmark.circle"
+                if results.allSatisfy({ $0.images.isEmpty }) {
+                    alertMessage = "新添加的路径中没有可压缩的 PNG、JPG、JPEG 或 WebP 图片。"
+                }
                 return
             }
 
-            selectionSummary = result.summary(minimumCompressionBytes: minimumCompressionBytes)
-            imageItems = result.images.map { image in
-                TinyPNGImageItem(
-                    id: image.url,
-                    relativePath: self.relativePath(for: image.url, inputURL: standardizedURL),
-                    byteCount: image.byteCount,
-                    status: self.shouldSkip(image.byteCount, minimumCompressionBytes: minimumCompressionBytes)
-                        ? .skipped
-                        : .waiting
-                )
-            }
+            imageItems.append(contentsOf: appendedItems)
+            selectionSummary = TinyPNGSelectionSummary(
+                imageCount: imageItems.count,
+                oversizedCount: imageItems.filter { $0.byteCount > TinyPNGInputScanner.maxUploadBytes }.count,
+                belowMinimumCount: imageItems.filter { $0.byteCount < minimumCompressionBytes }.count
+            )
             operationStatus = "已选择，等待开始"
             operationStatusSystemImage = "checkmark.circle"
         }
@@ -846,13 +863,14 @@ final class TinyPNGModel {
     }
 
     func run() {
-        guard let selectedURL, canRun else { return }
+        guard canRun, !selectedURLs.isEmpty else { return }
         guard let scriptURL = Bundle.main.url(forResource: "tinypng", withExtension: "py") else {
             showError("App 内缺少 TinyPNG 脚本：tinypng.py")
             return
         }
 
-        let hasSecurityScope = selectedURL.startAccessingSecurityScopedResource()
+        let inputURLs = selectedURLs
+        let hasSecurityScopes = inputURLs.map { $0.startAccessingSecurityScopedResource() }
         isRunning = true
         isStopping = false
         let cancellation = StreamingProcessCancellation()
@@ -871,10 +889,11 @@ final class TinyPNGModel {
         let shouldReplaceOriginals = replaceOriginals
         let minimumCompressionSizeKB = minimumCompressionSizeKB
 
-        Task { [weak self, selectedURL, scriptURL, hasSecurityScope, shouldReplaceOriginals, cancellation] in
+        Task { [weak self, inputURLs, scriptURL, hasSecurityScopes, shouldReplaceOriginals, cancellation] in
             defer {
-                if hasSecurityScope {
-                    selectedURL.stopAccessingSecurityScopedResource()
+                for (index, url) in inputURLs.enumerated()
+                where index < hasSecurityScopes.count && hasSecurityScopes[index] {
+                    url.stopAccessingSecurityScopedResource()
                 }
             }
 
@@ -887,10 +906,10 @@ final class TinyPNGModel {
                         "exec python3 -u \"$@\"",
                         "devkit",
                         scriptURL.path,
-                        selectedURL.path,
-                    ] + (shouldReplaceOriginals ? ["--replace"] : [])
+                    ] + inputURLs.map(\.path)
+                        + (shouldReplaceOriginals ? ["--replace"] : [])
                         + ["--min-size-kb", String(minimumCompressionSizeKB)],
-                    currentDirectoryURL: selectedURL.deletingLastPathComponent(),
+                    currentDirectoryURL: inputURLs[0].deletingLastPathComponent(),
                     cancellation: cancellation,
                     environment: [
                         "DEVKIT_PARENT_PID": String(ProcessInfo.processInfo.processIdentifier)
@@ -968,6 +987,7 @@ final class TinyPNGModel {
         if isScanning {
             scanWorker?.cancel()
             scanWorker = nil
+            pendingScanURLs = []
             activeSelectionToken = UUID()
             isScanning = false
             operationStatus = "已停止"
@@ -1014,8 +1034,29 @@ final class TinyPNGModel {
 
     private func relativePath(for imageURL: URL, inputURL: URL) -> String {
         if TinyPNGInputScanner.isDirectory(inputURL) {
-            return imageURL.path.replacingOccurrences(
+            let privateRelative = imageURL.path.replacingOccurrences(
+                of: "/private" + inputURL.path + "/",
+                with: ""
+            )
+            if privateRelative != imageURL.path {
+                return privateRelative
+            }
+            let standardizedRelative = imageURL.path.replacingOccurrences(
+                of: inputURL.standardizedFileURL.path + "/",
+                with: ""
+            )
+            if standardizedRelative != imageURL.path {
+                return standardizedRelative
+            }
+            let relative = imageURL.path.replacingOccurrences(
                 of: inputURL.path + "/",
+                with: ""
+            )
+            if relative != imageURL.path {
+                return relative
+            }
+            return imageURL.path.replacingOccurrences(
+                of: inputURL.standardizedFileURL.path + "/",
                 with: ""
             )
         }

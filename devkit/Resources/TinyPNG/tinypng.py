@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 TinyPNG 批量压缩工具
-用法: python3 tinypng.py <文件或目录路径>
-输出: 在同级目录生成 <原名>_<时间戳> 的压缩结果
+用法: python3 tinypng.py <文件或目录路径...>
+输出: 单根输入在同级生成 <原名>_<时间戳>；多根输入统一生成 TinyPNG_<时间戳>
 失败的图片会记录到 JSON 文件并自动重试直到全部成功
 
 大概比例:
@@ -353,7 +353,7 @@ def run_batch(tasks: list[tuple[Path, Path]], total_all: int, done_offset: int, 
 def main():
     start_parent_watchdog()
     parser = argparse.ArgumentParser(description="TinyPNG 批量压缩工具")
-    parser.add_argument("path", nargs="?", help="图片文件或文件夹路径")
+    parser.add_argument("paths", nargs="*", help="图片文件或文件夹路径，可传多个")
     parser.add_argument(
         "--replace",
         action="store_true",
@@ -367,8 +367,8 @@ def main():
     )
     args = parser.parse_args()
 
-    raw = args.path
-    if raw is None:
+    raw_paths = args.paths
+    if not raw_paths:
         try:
             raw = input("请拖入文件或目录路径: ").strip().strip("'\"")
         except (EOFError, KeyboardInterrupt):
@@ -377,45 +377,77 @@ def main():
         if not raw:
             print("未输入路径")
             sys.exit(1)
+        raw_paths = [raw]
     replace_originals = args.replace
     minimum_compression_bytes = max(0, args.min_size_kb) * 1024
 
-    input_path = Path(raw.strip()).resolve()
-    if not input_path.exists():
-        print(f"路径不存在: {input_path}")
-        sys.exit(1)
+    input_roots: list[Path] = []
+    for raw in raw_paths:
+        path = Path(raw.strip()).resolve()
+        if not path.exists():
+            print(f"路径不存在: {path}")
+            sys.exit(1)
+        if path not in input_roots:
+            input_roots.append(path)
 
-    # 收集图片
-    images = collect_images(input_path)
+    root_images: list[tuple[Path, list[Path]]] = []
+    seen_paths: set[Path] = set()
+    for root in input_roots:
+        unique_images = []
+        for image in collect_images(root):
+            canonical_path = image.resolve()
+            if canonical_path not in seen_paths:
+                seen_paths.add(canonical_path)
+                unique_images.append(image)
+        if unique_images:
+            root_images.append((root, unique_images))
+
+    images = [image for _, root_images in root_images for image in root_images]
     if not images:
         print("未找到支持的图片文件")
         sys.exit(1)
 
-    # 默认在输入路径同级生成输出目录；替换模式直接写回原文件。
+    root_of = {image: root for root, root_images in root_images for image in root_images}
+    root_names: dict[Path, str] = {}
+    used_names: set[str] = set()
+    for root in input_roots:
+        base_name = root.stem if root.is_file() else root.name
+        name = base_name
+        suffix = 2
+        while name.casefold() in used_names:
+            name = f"{base_name}_{suffix}"
+            suffix += 1
+        used_names.add(name.casefold())
+        root_names[root] = name
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir: Path | None
     if replace_originals:
-        output_dir = input_path.parent if input_path.is_file() else input_path
-    elif input_path.is_file():
-        base_name = input_path.stem
-        output_dir = input_path.parent / f"{base_name}_{timestamp}"
+        output_dir = None
+    elif len(input_roots) == 1:
+        root = input_roots[0]
+        base_name = root.stem if root.is_file() else root.name
+        output_dir = root.parent / f"{base_name}_{timestamp}"
     else:
-        output_dir = input_path.parent / f"{input_path.name}_{timestamp}"
+        output_dir = input_roots[0].parent / f"TinyPNG_{timestamp}"
 
-    if not replace_originals:
+    if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 替换模式的失败记录放在隐藏文件中，不污染输入目录的资源结构。
-    fail_file = (
-        output_dir / "_failed.json"
-        if not replace_originals
-        else input_path.parent / f".{input_path.stem}_tinypng_failed.json"
-    )
+    first_root = input_roots[0]
+    if not replace_originals:
+        fail_file = output_dir / "_failed.json"
+    elif len(input_roots) == 1:
+        fail_file = first_root.parent / f".{first_root.stem}_tinypng_failed.json"
+    else:
+        fail_file = first_root.parent / ".TinyPNG_failed.json"
+    report_dir = output_dir or (first_root.parent if first_root.is_file() else first_root)
 
     print(f"{'=' * 60}")
     print(f"  TinyPNG 批量压缩工具")
     print(f"{'=' * 60}")
-    print(f"  输入: {input_path}")
-    print(f"  输出: {output_dir}")
+    for root in input_roots:
+        print(f"  输入: {root}")
+    print(f"  输出: {report_dir}")
     print(f"  模式: {'自动替换原图' if replace_originals else '生成同级输出文件夹'}")
     print(f"  图片数量: {len(images)}")
     print(f"  并发数: {MAX_WORKERS}")
@@ -423,37 +455,45 @@ def main():
     print(f"  最低压缩大小: {format_size(minimum_compression_bytes)}")
     print(f"{'=' * 60}\n")
 
-    # 先在本地筛掉不符合大小条件的图片，避免无效上传和重试。
+    def relative_to_root(root: Path, image: Path) -> Path:
+        relative = image.relative_to(root)
+        return Path(image.name) if relative == Path(".") else relative
+
+    def copy_unchanged(root: Path, image: Path):
+        """文件夹输出模式下，把跳过图片按原结构复制到输出目录。"""
+        if replace_originals:
+            return
+        relative = relative_to_root(root, image)
+        unchanged_dst = (output_dir / relative) if len(input_roots) == 1 else (
+            output_dir / root_names[root] / relative
+        )
+        unchanged_dst.parent.mkdir(parents=True, exist_ok=True)
+        if not unchanged_dst.exists():
+            shutil.copy2(image, unchanged_dst)
+
     skipped = skipped_images(images, minimum_compression_bytes)
     skipped_paths = {path for path, _, _ in skipped}
     for img, size, reason in skipped:
-        if not replace_originals:
-            if input_path.is_file():
-                unchanged_dst = output_dir / img.name
-            else:
-                unchanged_dst = output_dir / img.relative_to(input_path)
-            unchanged_dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(img, unchanged_dst)
+        copy_unchanged(root_of[img], img)
         print(f"  ⚠️ 跳过（{reason}）: {img} ({format_size(size)})")
     if skipped:
         unchanged_message = "原图已保留到输出目录" if not replace_originals else "原图保持不变"
         print(f"\n  共跳过 {len(skipped)} 张图片，未调用 TinyPNG；{unchanged_message}。\n")
 
-    # 构建任务列表
-    tasks = []
+    tasks: list[tuple[Path, Path]] = []
     for img in images:
         if img in skipped_paths:
             continue
+        root = root_of[img]
         if replace_originals:
             dst = img
-        elif input_path.is_file():
-            dst = output_dir / img.name
         else:
-            rel = img.relative_to(input_path)
-            dst = output_dir / rel
+            relative = relative_to_root(root, img)
+            dst = (output_dir / relative) if len(input_roots) == 1 else (
+                output_dir / root_names[root] / relative
+            )
         tasks.append((img, dst))
 
-    total_all = len(tasks)
     if not tasks:
         print("没有可上传的图片，压缩结束。")
         return
@@ -463,24 +503,20 @@ def main():
 
     start_time = time.time()
 
-    # 全局复用 Session 与限流器，避免每轮重建 TLS 连接池
     session = create_session()
     limiter = RateLimiter(min_interval=RATE_LIMIT_INTERVAL)
 
-    # === 第一轮压缩 ===
     print("--- 第 1 轮压缩 ---\n")
     succeeded, failed, batch_before, batch_after = run_batch(
-        tasks, total_all, 0, start_time, session, limiter
+        tasks, len(tasks), 0, start_time, session, limiter
     )
     print(f"\n  第 1 轮完成，总用时: {format_elapsed(time.time() - start_time)}")
     grand_before += batch_before
     grand_after += batch_after
     all_success_count += len(succeeded)
 
-    # 保存失败记录
     save_failed_list(fail_file, failed)
 
-    # === 自动重试失败的图片 ===
     retry_round = 1
     while failed:
         retry_round += 1
@@ -489,37 +525,31 @@ def main():
         time.sleep(1)
 
         retry_tasks = [(Path(r["src"]), Path(r["dst"])) for r in failed]
-        # 重试时不累加 grand_before（这些图片已经统计过原始大小）
-        # 需要从 grand_after 中扣除之前按原大小计入的部分
         prev_fail_size = sum(r["before"] for r in failed)
         grand_after -= prev_fail_size
 
         succeeded_retry, failed, batch_before_retry, batch_after_retry = run_batch(
-            retry_tasks, total_all, all_success_count, start_time, session, limiter
+            retry_tasks, len(tasks), all_success_count, start_time, session, limiter
         )
         grand_after += batch_after_retry
         all_success_count += len(succeeded_retry)
-        print(f"\n  第 {retry_round} 轮完成，总用时: {format_elapsed(time.time() - start_time)}")
+        print(f"  第 {retry_round} 轮完成，总用时: {format_elapsed(time.time() - start_time)}")
 
-        # 更新失败记录文件
         save_failed_list(fail_file, failed)
 
-    # === 汇总 ===
     saved_total = grand_before - grand_after
     pct_total = (saved_total / grand_before * 100) if grand_before > 0 else 0
 
     print(f"\n{'=' * 60}")
     print(f"  全部压缩完成!")
-    print(f"  总数: {total_all}  全部成功 ✅")
+    print(f"  总数: {len(tasks)}  全部成功 ✅")
     if retry_round > 1:
         print(f"  共经过 {retry_round} 轮 (含 {retry_round - 1} 轮重试)")
     print(f"  压缩前: {format_size(grand_before)}")
     print(f"  压缩后: {format_size(grand_after)}")
     print(f"  节省:   {format_size(saved_total)} ({pct_total:.1f}%)")
     print(f"  总用时: {format_elapsed(time.time() - start_time)}")
-    print(f"  输出目录: {output_dir}")
+    print(f"  输出目录: {report_dir}")
     print(f"{'=' * 60}")
-
-
 if __name__ == "__main__":
     main()

@@ -714,6 +714,7 @@ final class WebPConversionModel {
     var outputDirectoryURL: URL?
 
     private var scanWorker: Task<[WebPScanResult], Never>?
+    private var pendingScanURLs: [URL] = []
     private var activeSelectionToken = UUID()
     private var outputEventBuffer = ""
     private var processCancellation: StreamingProcessCancellation?
@@ -785,19 +786,27 @@ final class WebPConversionModel {
     func select(urls: [URL]) -> Bool {
         guard !isRunning else { return false }
         let standardizedURLs = urls.map(\.standardizedFileURL)
-        let existingPaths = Set(selectedURLs.map(\.path))
-        let newURLs = standardizedURLs.filter { !existingPaths.contains($0.path) }
-        let acceptedURLs = newURLs.filter(WebPInputScanner.accepts(_:))
-        guard !acceptedURLs.isEmpty else {
+        let validURLs = standardizedURLs.filter(WebPInputScanner.accepts(_:))
+        guard !validURLs.isEmpty else {
             showError("请选择文件夹，或选择 PNG、JPG、HEIC 等图片。")
             return false
+        }
+        var knownRoots = Set((selectedURLs + pendingScanURLs).map(\.path))
+        let initiallyAcceptedURLs = validURLs.filter { knownRoots.insert($0.path).inserted }
+        let acceptedURLs = initiallyAcceptedURLs.filter { url in
+            !initiallyAcceptedURLs.contains { root in
+                root.path != url.path && url.path.hasPrefix(root.path + "/")
+            }
+        }
+        guard !acceptedURLs.isEmpty else {
+            return true
         }
 
         scanWorker?.cancel()
         scanWorker = nil
         isScanning = false
         activeSelectionToken = UUID()
-        selectedURLs.append(contentsOf: acceptedURLs)
+        pendingScanURLs.append(contentsOf: acceptedURLs)
         isScanning = true
         operationStatus = "正在扫描图片"
         operationStatusSystemImage = "arrow.triangle.2.circlepath"
@@ -805,7 +814,8 @@ final class WebPConversionModel {
 
         let selectionToken = UUID()
         activeSelectionToken = selectionToken
-        let scannedURLs = acceptedURLs
+        // Include the previous pending batch when replacing an in-flight scan.
+        let scannedURLs = pendingScanURLs
         let worker = Task.detached(priority: .userInitiated) {
             scannedURLs.map { WebPInputScanner.scan($0) }
         }
@@ -820,12 +830,14 @@ final class WebPConversionModel {
             }
 
             scanWorker = nil
+            pendingScanURLs = []
             isScanning = false
 
             var knownPaths = Set(imageItems.map(\.id.path))
             var appendedItems: [WebPImageItem] = []
             for (index, result) in results.enumerated() {
                 let inputURL = scannedURLs[index]
+                let previousCount = appendedItems.count
                 for image in result.images where knownPaths.insert(image.url.path).inserted {
                     appendedItems.append(
                         WebPImageItem(
@@ -836,13 +848,17 @@ final class WebPConversionModel {
                         )
                     )
                 }
+                if appendedItems.count > previousCount {
+                    selectedURLs.append(inputURL)
+                }
             }
 
             guard !appendedItems.isEmpty else {
-                selectedURLs.removeSubrange((selectedURLs.count - scannedURLs.count)...)
                 operationStatus = selectedURLs.isEmpty ? "请选择图片或文件夹" : "已选择，等待开始"
                 operationStatusSystemImage = selectedURLs.isEmpty ? "photo.on.rectangle" : "checkmark.circle"
-                alertMessage = "新添加的路径中没有可转换的图片。"
+                if results.allSatisfy({ $0.images.isEmpty }) {
+                    alertMessage = "新添加的路径中没有可转换的图片。"
+                }
                 return
             }
 
@@ -990,6 +1006,7 @@ final class WebPConversionModel {
         if isScanning {
             scanWorker?.cancel()
             scanWorker = nil
+            pendingScanURLs = []
             activeSelectionToken = UUID()
             isScanning = false
             operationStatus = "已停止"
@@ -1049,10 +1066,28 @@ final class WebPConversionModel {
 
     private func relativePath(for imageURL: URL, inputURL: URL) -> String {
         if WebPInputScanner.isDirectory(inputURL) {
-            return imageURL.path.replacingOccurrences(
+            let privateRelative = imageURL.path.replacingOccurrences(
+                of: "/private" + inputURL.path + "/",
+                with: ""
+            )
+            if privateRelative != imageURL.path {
+                return privateRelative
+            }
+            let standardizedRelative = imageURL.path.replacingOccurrences(
+                of: inputURL.standardizedFileURL.path + "/",
+                with: ""
+            )
+            if standardizedRelative != imageURL.path {
+                return standardizedRelative
+            }
+            let relative = imageURL.path.replacingOccurrences(
                 of: inputURL.path + "/",
                 with: ""
             )
+            if relative != imageURL.path {
+                return relative
+            }
+            return imageURL.lastPathComponent
         }
         return imageURL.lastPathComponent
     }
