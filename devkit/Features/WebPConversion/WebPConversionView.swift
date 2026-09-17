@@ -85,6 +85,13 @@ struct WebPConversionView: View {
                         Label("转换状态", systemImage: "list.bullet.rectangle")
                     }
                     .disabled(model.imageItems.isEmpty)
+
+                    Button {
+                        model.clearSelection()
+                    } label: {
+                        Label("清空列表", systemImage: "trash")
+                    }
+                    .disabled(model.isRunning || model.isScanning)
                 }
             }
 
@@ -1025,6 +1032,23 @@ final class WebPConversionModel {
             return updated
         }
         processCancellation?.cancel()
+    }
+
+    func clearSelection() {
+        guard !isRunning, !isScanning else { return }
+        scanWorker?.cancel()
+        scanWorker = nil
+        pendingScanURLs = []
+        activeSelectionToken = UUID()
+        selectedURLs = []
+        selectionSummary = nil
+        imageItems = []
+        output = ""
+        outputEventBuffer = ""
+        outputDirectoryURL = nil
+        operationStatus = "请选择图片或文件夹"
+        operationStatusSystemImage = "photo.on.rectangle"
+        alertMessage = nil
     }
 
     func revealOutputDirectory() {

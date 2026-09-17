@@ -762,6 +762,48 @@ struct DevKitTests {
         #expect(WebPConversionModel().selectedURLs.isEmpty)
     }
 
+    @Test func clearingSelectionResetsTinyPNGAndWebPState() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "DevKitTests-Clear-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let image = directory.appending(path: "image.png")
+        try Data([0]).write(to: image)
+
+        let tiny = TinyPNGModel()
+        #expect(tiny.select(urls: [image]))
+        let webp = WebPConversionModel()
+        #expect(webp.select(urls: [image]))
+        while tiny.isScanning || webp.isScanning { await Task.yield() }
+        #expect(!tiny.imageItems.isEmpty)
+        #expect(!webp.imageItems.isEmpty)
+
+        tiny.clearSelection()
+        webp.clearSelection()
+
+        #expect(tiny.selectedURLs.isEmpty)
+        #expect(tiny.imageItems.isEmpty)
+        #expect(tiny.selectionSummary == nil)
+        #expect(tiny.output.isEmpty)
+        #expect(tiny.outputDirectoryURL == nil)
+        #expect(tiny.operationStatus == "请选择图片或文件夹")
+        #expect(tiny.alertMessage == nil)
+
+        #expect(webp.selectedURLs.isEmpty)
+        #expect(webp.imageItems.isEmpty)
+        #expect(webp.selectionSummary == nil)
+        #expect(webp.output.isEmpty)
+        #expect(webp.outputDirectoryURL == nil)
+        #expect(webp.operationStatus == "请选择图片或文件夹")
+        #expect(webp.alertMessage == nil)
+
+        #expect(tiny.select(urls: [image]))
+        #expect(webp.select(urls: [image]))
+        while tiny.isScanning || webp.isScanning { await Task.yield() }
+        #expect(tiny.imageItems.count == 1)
+        #expect(webp.imageItems.count == 1)
+    }
+
     @Test func tinyPNGProgressCountsCompletedAndSkippedImages() {
         let model = TinyPNGModel()
         model.selectionSummary = TinyPNGSelectionSummary(imageCount: 4, oversizedCount: 1)
