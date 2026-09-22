@@ -6,6 +6,12 @@ import Testing
 struct DevKitTests {
     @Test func deviceReleaseYearGroupsDevicesReleasedInTheSameYear() {
         #expect(SimulatorManager.deviceReleaseYear(from: "iPhone 17 Pro Max") == 2026)
+        #expect(SimulatorManager.deviceReleaseYear(from: "iPhone 17e") == 2026)
+        #expect(SimulatorManager.deviceReleaseYear(from: "iPhone 18 Pro") == 2027)
+        #expect(SimulatorManager.deviceReleaseYear(from: "iPhone 18 Pro Max") == 2027)
+        #expect(SimulatorManager.deviceReleaseYear(from: "iPhone Duo") == 2027)
+        #expect(SimulatorManager.deviceReleaseYear(from: "iPhone Air") == 2026)
+        #expect(SimulatorManager.deviceReleaseYear(from: "iPhone 16e") == 2025)
         #expect(SimulatorManager.deviceReleaseYear(from: "iPad mini (A17 Pro)") == 2024)
         #expect(SimulatorManager.deviceReleaseYear(from: "iPad Pro 11-inch (M4)") == 2024)
         #expect(SimulatorManager.deviceReleaseYear(from: "iPad Air 13-inch (M3)") == 2025)

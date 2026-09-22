@@ -845,6 +845,7 @@ class SimulatorManager: ObservableObject, ErrorHandler {
     }
 
     private static let releaseYearByDeviceName: [String: Int] = [
+        "iPhone Duo": 2027,
         "iPad Air 11-inch (M4)": 2026,
         "iPad Air 13-inch (M4)": 2026,
         "iPhone 16e": 2025,
@@ -905,7 +906,7 @@ class SimulatorManager: ObservableObject, ErrorHandler {
             options: .regularExpression
         )
 
-        if normalizedName.hasPrefix("iPhone 17") || normalizedName == "iPhone Air" {
+        if normalizedName == "iPhone Air" {
             return 2026
         }
 
@@ -921,11 +922,13 @@ class SimulatorManager: ObservableObject, ErrorHandler {
               ),
               let numberRange = Range(match.range(at: 1), in: normalizedName),
               let modelNumber = Int(normalizedName[numberRange]),
-              (11...17).contains(modelNumber) else {
+              modelNumber >= 11 else {
             return 0
         }
 
-        return modelNumber + 2008
+        // iPhone 17 起发布年份按世代递增（17→2026，18→2027），避免新机型因
+        // 年份缺登记而返回 0、被排序压到旧机型之后
+        return modelNumber >= 17 ? modelNumber + 2009 : modelNumber + 2008
     }
 
     static func resolutionPixelCount(from resolution: String) -> Int {
@@ -1326,10 +1329,17 @@ class SimulatorManager: ObservableObject, ErrorHandler {
 
     /// 打开设备
     private func openSimulatorApp() {
+        // Xcode 27 起 Simulator.app 被移除，模拟器窗口改由 DeviceHub.app 承载
+        let simulatorApp = "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app"
+        let deviceHubApp = "/Applications/Xcode.app/Contents/Applications/DeviceHub.app"
+        let appPath = FileManager.default.fileExists(atPath: simulatorApp)
+            ? simulatorApp
+            : deviceHubApp
+
         do {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-            process.arguments = ["-a", "Simulator"]
+            process.arguments = [appPath]
             try process.run()
         } catch {
             handleError(SimulatorError.commandExecutionFailed("无法打开模拟器应用: \(error.localizedDescription)"))
@@ -2052,6 +2062,7 @@ class SimulatorManager: ObservableObject, ErrorHandler {
                 && $0.name.contains("Pro")
                 && !$0.name.contains("Max")
         }
+        appendFirstMatch { $0.productFamily == "iPhone" && isFoldableIPhone($0.name) }
         appendLatestSE()
         appendFirstMatch { $0.productFamily == "iPhone" && isAlternativeIPhone($0.name) }
         appendFirstMatch(preferNonCapacityVariant: true) {
@@ -2076,7 +2087,13 @@ class SimulatorManager: ObservableObject, ErrorHandler {
             && !name.contains("mini")
             && !name.contains("SE")
             && !name.contains("Air")
+            && !isFoldableIPhone(name)
             && !matchesPattern("^iPhone \\d+e$", in: name)
+    }
+
+    // 折叠屏形态（如 2026 年发布的 iPhone Duo，传闻期曾称 iPhone Fold）
+    private func isFoldableIPhone(_ name: String) -> Bool {
+        name.contains("Duo") || name.contains("Fold")
     }
 
     private func isAlternativeIPhone(_ name: String) -> Bool {
