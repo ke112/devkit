@@ -1,10 +1,11 @@
 import Foundation
 import SwiftUI
 
+
 struct ContentView: View {
-    private let columns = [
-        GridItem(.flexible(), spacing: 20),
-        GridItem(.flexible(), spacing: 20),
+    private let featureColumns = [
+        GridItem(.flexible(), spacing: 14),
+        GridItem(.flexible(), spacing: 14),
     ]
     private let preferencesDefaults: UserDefaults
 
@@ -26,16 +27,27 @@ struct ContentView: View {
                         systemImage: "square.grid.2x2"
                     )
                 } else {
-                    ScrollView(.vertical) {
-                        LazyVGrid(columns: columns, spacing: 20) {
-                            ForEach(visibleFeatureSettings) { setting in
-                                FeatureLink(feature: setting.feature)
+                    HStack(alignment: .top, spacing: 0) {
+                        ScrollView(.vertical) {
+                            LazyVGrid(columns: featureColumns, spacing: 14) {
+                                ForEach(visibleFeatureSettings) { setting in
+                                    FeatureLink(feature: setting.feature)
+                                }
                             }
+                            .padding(.top, 24)
+                            .padding(.horizontal, 28)
+                            .padding(.bottom, 28)
+                            .frame(maxWidth: .infinity, alignment: .top)
                         }
-                        .padding(32)
+                        .scrollIndicators(.visible)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                        HomeDisplaySection()
+                            .frame(width: 250)
+                            .padding(.trailing, 24)
+                            .padding(.vertical, 24)
                     }
-                    .scrollIndicators(.visible)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
             .navigationTitle("DevKit")
@@ -112,6 +124,27 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
             "去除图片水印"
         case .idPhoto:
             "制作证件照"
+        }
+    }
+
+    var caption: String {
+        switch self {
+        case .simulatorManagement:
+            "启动、管理与清理模拟器"
+        case .imageOverlay:
+            "叠加对比两张截图"
+        case .appStoreRelease:
+            "上传构建并提交审核"
+        case .tinyPNG:
+            "压缩 PNG 与 JPEG"
+        case .webPConversion:
+            "图片转为 WebP 格式"
+        case .mediaCompression:
+            "压缩视频与动图"
+        case .watermarkRemoval:
+            "智能识别并去除水印"
+        case .idPhoto:
+            "换底色生成证件照"
         }
     }
 
@@ -246,29 +279,82 @@ private struct HomeFeatureSettingsView: View {
     }
 }
 
+private struct HomeDisplaySection: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 14) {
+                Image(systemName: "rectangle.compress.vertical")
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(.orange.opacity(0.85))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("DevKit")
+                        .font(.system(size: 19, weight: .bold, design: .rounded))
+                    Text("开发者工具箱")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.bottom, 28)
+
+            Spacer(minLength: 0)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 20))
+                    .foregroundStyle(.tertiary)
+                Text("展示区")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text("预留固定位置，用于展示与功能无关的内容")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.bottom, 6)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
 private struct FeatureLink: View {
     let feature: DevKitFeature
 
     var body: some View {
         NavigationLink(value: feature) {
-            VStack(spacing: 18) {
+            HStack(spacing: 14) {
                 Image(systemName: feature.systemImage)
-                    .font(.system(size: 42, weight: .medium))
+                    .font(.system(size: 20, weight: .medium))
                     .foregroundStyle(.tint)
-                    .frame(width: 64, height: 64)
+                    .frame(width: 44, height: 44)
+                    .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
 
-                Text(feature.title)
-                    .font(.title2.weight(.semibold))
-                    .foregroundStyle(.primary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(feature.title)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text(feature.caption)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.quaternary)
             }
-            .frame(maxWidth: .infinity)
-            .frame(height: 190)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
             .background(Color(nsColor: .controlBackgroundColor))
             .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
