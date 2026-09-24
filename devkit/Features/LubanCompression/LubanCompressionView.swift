@@ -273,22 +273,28 @@ final class LubanCompressionModel {
 
     func run() {
         guard canRun else { return }
-        let items = imageItems
+        // 先取待压缩快照，再把状态切到 .compressing；循环内以 imageItems 的当前状态为准（中途停止后跳过）
+        let pendingItems = imageItems.filter {
+            if case .waiting = $0.status { return true }
+            return false
+        }
         let shouldReplace = replaceOriginals
 
         // 准备输出目录
         let timestamp = Self.fileTimestamp()
-        let outputDir: URL
+        let outputDir: URL?
         if shouldReplace {
-            outputDir = URL(fileURLWithPath: "/dev/null") // 占位，实际写入原路径
+            outputDir = nil
+            outputDirectoryURL = nil
         } else if selectedURLs.count == 1 {
             let root = selectedURLs[0]
             let baseName = root.deletingPathExtension().lastPathComponent
             outputDir = root.deletingLastPathComponent().appendingPathComponent("\(baseName)_\(timestamp)")
+            outputDirectoryURL = outputDir
         } else {
             outputDir = selectedURLs[0].deletingLastPathComponent().appendingPathComponent("Luban_\(timestamp)")
+            outputDirectoryURL = outputDir
         }
-        outputDirectoryURL = shouldReplace ? nil : outputDir
 
         isRunning = true
         isStopping = false
@@ -303,9 +309,10 @@ final class LubanCompressionModel {
 
         compressionTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            for item in items {
+            for item in pendingItems {
                 guard !Task.isCancelled else { break }
-                guard case .compressing = item.status else { continue }
+                guard let current = self.imageItems.first(where: { $0.id == item.id }),
+                      case .compressing = current.status else { continue }
 
                 do {
                     let outputURL: URL
@@ -318,6 +325,7 @@ final class LubanCompressionModel {
                         _ = try FileManager.default.replaceItemAt(item.id, withItemAt: compressed)
                         outputURL = item.id
                     } else {
+                        guard let outputDir else { break }
                         let relative = item.relativePath
                         let target = outputDir.appendingPathComponent(relative)
                             .deletingPathExtension().appendingPathExtension("jpg")
