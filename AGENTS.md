@@ -6,7 +6,7 @@
 - Keep changes within the request and follow each file's language and naming style. Read [CONTEXT.md](CONTEXT.md) when working on image-processing behavior or terminology.
 - Analysis and review requests are read-only. Change requests authorize scoped local edits and non-destructive verification; complete that work without repeated confirmation. Ask only when missing information materially affects correctness, scope, or authorization, and continue independent authorized work.
 - External writes, destructive operations, and Git mutations require explicit authorization covering the action and target. Reuse authorization already given in the session; otherwise prepare a reviewable result before asking. Preserve unrelated user changes.
-- Never stage, commit, or push unless the user explicitly requests those Git actions for the current task. Finishing a feature, passing checks, or an unrelated earlier commit authorization does not imply commit or push approval.
+- Never stage, commit, or push unless the user explicitly requests those Git actions for the current task; finishing a feature, passing checks, or unrelated earlier authorization does not imply approval. This current-task requirement is an exception to session-scoped authorization reuse.
 - Simulator reset, delete, recreate, and Runtime removal require an explicit request for that exact operation, including during UI verification.
 - User instructions take precedence over skill guidance, subject to higher-priority instructions. If a skill blocks requested work or requires confirmation, link the exact file, quote the rule, and explain its applicability.
 
