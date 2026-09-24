@@ -16,7 +16,7 @@ struct TinyPNGView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("TinyPNG 图片压缩")
                     .font(.largeTitle.bold())
-                Text("默认自动替换原图，关闭开关后写入同级时间戳文件夹")
+                Text("默认输出到 ~/Desktop/DevKitOutput 时间戳文件夹；开启后压缩成功替换原图")
                     .font(.title3)
                     .foregroundStyle(.secondary)
             }
@@ -36,7 +36,7 @@ struct TinyPNGView: View {
 
                 Spacer()
 
-                Toggle("自动替换原图", isOn: $model.replaceOriginals)
+                Toggle("自动替换原图路径", isOn: $model.replaceOriginals)
                     .toggleStyle(.switch)
                     .help("开启后压缩成功的图片会替换原文件；关闭后生成同级输出文件夹")
                     .disabled(model.isRunning || model.isScanning)
@@ -278,7 +278,9 @@ private struct TinyPNGTaskRow: View {
             showsPreviewButton: item.status == .success,
             onPreview: { isPreviewPresented = true },
             onRevealSource: onRevealSource,
-            onRevealDestination: nil
+            onRevealDestination: { url in
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            }
         )
         .sheet(isPresented: $isPreviewPresented) {
             TinyPNGImagePreview(imageURL: item.id)
@@ -554,7 +556,7 @@ final class TinyPNGModel {
     var selectedURLs: [URL] = []
     var selectionSummary: TinyPNGSelectionSummary?
     var imageItems: [TinyPNGImageItem] = []
-    var replaceOriginals = true
+    var replaceOriginals = false
     var minimumCompressionSizeKB: Int {
         didSet {
             let normalized = Self.normalizedMinimumCompressionSizeKB(minimumCompressionSizeKB)
@@ -763,8 +765,11 @@ final class TinyPNGModel {
         alertMessage = nil
         let shouldReplaceOriginals = replaceOriginals
         let minimumCompressionSizeKB = minimumCompressionSizeKB
+        // 非替换模式统一输出到 ~/Desktop/DevKit/<功能名>_<时间戳>/
+        let unifiedOutputBase = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Desktop/DevKitOutput", isDirectory: true)
 
-        Task { [weak self, inputURLs, scriptURL, hasSecurityScopes, shouldReplaceOriginals, cancellation] in
+        Task { [weak self, inputURLs, scriptURL, hasSecurityScopes, shouldReplaceOriginals, cancellation, unifiedOutputBase] in
             defer {
                 for (index, url) in inputURLs.enumerated()
                 where index < hasSecurityScopes.count && hasSecurityScopes[index] {
@@ -783,7 +788,8 @@ final class TinyPNGModel {
                         scriptURL.path,
                     ] + inputURLs.map(\.path)
                         + (shouldReplaceOriginals ? ["--replace"] : [])
-                        + ["--min-size-kb", String(minimumCompressionSizeKB)],
+                        + ["--min-size-kb", String(minimumCompressionSizeKB)]
+                        + (shouldReplaceOriginals ? [] : ["--output-dir", unifiedOutputBase.path]),
                     currentDirectoryURL: inputURLs[0].deletingLastPathComponent(),
                     cancellation: cancellation,
                     environment: [
@@ -962,6 +968,9 @@ final class TinyPNGModel {
     }
 
     private func finalizeSkippedItems() {
+        // 跳过项补输出路径：替换模式 = 原文件；非替换单根输入 = 输出目录内同相对路径（多根结构由脚本分组，无法可靠推导则不显示）
+        let outputBase = outputDirectoryURL
+        let isSingleRoot = selectedURLs.count == 1
         imageItems = imageItems.map { item in
             guard case .skipped = item.status, item.compressedByteCount == nil else {
                 return item
@@ -969,6 +978,12 @@ final class TinyPNGModel {
             var updated = item
             updated.compressedByteCount = item.byteCount
             updated.compressionPercentage = 0
+            if outputBase == nil {
+                updated.destinationPath = item.id.path
+            } else if isSingleRoot {
+                updated.destinationPath = outputBase?
+                    .appendingPathComponent(item.relativePath).path
+            }
             return updated
         }
     }

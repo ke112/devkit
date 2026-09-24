@@ -8,7 +8,8 @@ struct MediaCompressionView: View {
 
     @State private var videoTasks: [MediaVideoTask] = []
     @State private var videoPreset: MediaVideoPreset = .medium
-    @State private var outputDirectory = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+    @State private var outputDirectory: URL? = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Desktop/DevKitOutput", isDirectory: true)
     @State private var isRunning = false
     @State private var isScanning = false
     @State private var isDropTargeted = false
@@ -60,7 +61,8 @@ struct MediaCompressionView: View {
 
                 Button("重置设置") {
                     videoPreset = .medium
-                    outputDirectory = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+                    outputDirectory = FileManager.default.homeDirectoryForCurrentUser
+                        .appendingPathComponent("Desktop/DevKitOutput", isDirectory: true)
                     message = "已重置为默认设置。"
                 }
                 .disabled(isRunning || isScanning)
@@ -304,9 +306,11 @@ struct MediaCompressionView: View {
         let baseDirectory = outputDirectory
             ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser
+        let timestamp = fileTimestamp()
         let config = MediaVideoCompressionConfig(
             preset: videoPreset,
             batchDirectory: MediaVideoCompressor.makeBatchDirectory(under: baseDirectory)
+                .appendingPathComponent(timestamp, isDirectory: true)
         )
         runVideos(config: config)
     }
@@ -367,6 +371,12 @@ struct MediaCompressionView: View {
             if failed > 0 { parts.append("失败 \(failed)") }
             message = parts.joined(separator: "，")
         }
+    }
+
+    private func fileTimestamp() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd_HHmmss"
+        return formatter.string(from: Date())
     }
 
     private func resetVideoResults() {

@@ -16,7 +16,7 @@ struct WebPConversionView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("WebP 图片转换")
                     .font(.largeTitle.bold())
-                Text("默认自动替换原图，关闭开关后写入同级时间戳文件夹；仅当 WebP 更小时才替换")
+                Text("默认输出到 ~/Desktop/DevKitOutput 时间戳文件夹，仅当 WebP 更小时才替换；开启后替换原图")
                     .font(.title3)
                     .foregroundStyle(.secondary)
             }
@@ -60,7 +60,7 @@ struct WebPConversionView: View {
 
                 Spacer()
 
-                Toggle("自动替换原图", isOn: $model.replaceOriginals)
+                Toggle("自动替换原图路径", isOn: $model.replaceOriginals)
                     .toggleStyle(.switch)
                     .help("开启后转换成功的图片会替换原文件；关闭后生成同级输出文件夹")
                     .disabled(model.isRunning || model.isScanning)
@@ -301,7 +301,9 @@ private struct WebPTaskRow: View {
             showsPreviewButton: item.status == .success,
             onPreview: { isPreviewPresented = true },
             onRevealSource: onRevealSource,
-            onRevealDestination: nil
+            onRevealDestination: { url in
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            }
         )
         .sheet(isPresented: $isPreviewPresented) {
             WebPImagePreview(imageURL: item.id)
@@ -545,7 +547,7 @@ final class WebPConversionModel {
     var selectedURLs: [URL] = []
     var selectionSummary: WebPSelectionSummary?
     var imageItems: [WebPImageItem] = []
-    var replaceOriginals = true
+    var replaceOriginals = false
     var quality: Int {
         didSet {
             let normalized = Self.normalizedQuality(quality)
@@ -771,8 +773,11 @@ final class WebPConversionModel {
         let selectedQuality = quality
         let minimumCompressionSizeKB = minimumCompressionSizeKB
         let maximumSideLength = maximumSideLength
+        // 非替换模式统一输出到 ~/Desktop/DevKit/<功能名>_<时间戳>/
+        let unifiedOutputBase = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Desktop/DevKitOutput", isDirectory: true)
 
-        Task { [weak self, inputURLs, scriptURL, hasSecurityScopes, shouldReplaceOriginals, cancellation] in
+        Task { [weak self, inputURLs, scriptURL, hasSecurityScopes, shouldReplaceOriginals, cancellation, unifiedOutputBase] in
             defer {
                 for (index, url) in inputURLs.enumerated()
                 where index < hasSecurityScopes.count && hasSecurityScopes[index] {
@@ -796,6 +801,8 @@ final class WebPConversionModel {
                 }
                 if shouldReplaceOriginals {
                     arguments.append("--replace")
+                } else {
+                    arguments.append(contentsOf: ["--output-dir", unifiedOutputBase.path])
                 }
 
                 let result = try await StreamingProcess.run(
@@ -993,6 +1000,9 @@ final class WebPConversionModel {
     }
 
     private func finalizeSkippedItems() {
+        // 跳过项补输出路径：替换模式 = 原文件；非替换单根输入 = 输出目录内同相对路径（多根结构由脚本分组，无法可靠推导则不显示）
+        let outputBase = outputDirectoryURL
+        let isSingleRoot = selectedURLs.count == 1
         imageItems = imageItems.map { item in
             guard case .skipped = item.status, item.convertedByteCount == nil else {
                 return item
@@ -1000,6 +1010,12 @@ final class WebPConversionModel {
             var updated = item
             updated.convertedByteCount = item.byteCount
             updated.conversionPercentage = 0
+            if outputBase == nil {
+                updated.destinationPath = item.id.path
+            } else if isSingleRoot {
+                updated.destinationPath = outputBase?
+                    .appendingPathComponent(item.relativePath).path
+            }
             return updated
         }
     }

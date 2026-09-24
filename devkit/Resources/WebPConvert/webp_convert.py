@@ -242,6 +242,7 @@ def main():
     parser.add_argument("--min-size-kb", type=int, default=100, help="小于此大小（KB）的图片跳过转换")
     parser.add_argument("--max-side", type=int, default=0, help="最长边超过该像素时按比例缩小，0 不限制")
     parser.add_argument("--replace", action="store_true", help="转换成功后替换原图；默认写入同级时间戳文件夹")
+    parser.add_argument("--output-dir", default="", help="非替换模式的输出根目录；缺省仍为输入同级")
     args = parser.parse_args()
 
     raw_paths = args.paths
@@ -293,8 +294,11 @@ def main():
     # 输出目录：替换模式就地写入；单根目录写入同级时间戳文件夹；
     # 多根目录统一写入 <首个根的同级>/WebP_<时间戳>/，按根名分组保持结构。
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    unified_base = Path(args.output_dir).expanduser() if args.output_dir else None
     if args.replace:
         output_dir = None
+    elif unified_base is not None:
+        output_dir = unified_base / f"WebP_{timestamp}"
     elif len(input_roots) == 1:
         root = input_roots[0]
         base_name = root.stem if root.is_file() else root.name

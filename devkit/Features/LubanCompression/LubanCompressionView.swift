@@ -162,7 +162,7 @@ final class LubanCompressionModel {
 
     var selectedURLs: [URL] = []
     var imageItems: [LubanImageItem] = []
-    var replaceOriginals = true
+    var replaceOriginals = false
     var minimumCompressionSizeKB: Int {
         didSet {
             let normalized = Self.normalizedMinimumCompressionSizeKB(minimumCompressionSizeKB)
@@ -315,13 +315,11 @@ final class LubanCompressionModel {
         if shouldReplace {
             outputDir = nil
             outputDirectoryURL = nil
-        } else if selectedURLs.count == 1 {
-            let root = selectedURLs[0]
-            let baseName = root.deletingPathExtension().lastPathComponent
-            outputDir = root.deletingLastPathComponent().appendingPathComponent("\(baseName)_\(timestamp)")
-            outputDirectoryURL = outputDir
         } else {
-            outputDir = selectedURLs[0].deletingLastPathComponent().appendingPathComponent("Luban_\(timestamp)")
+            // 非替换模式统一输出到 ~/Desktop/DevKit/<功能名>_<时间戳>/
+            outputDir = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Desktop/DevKitOutput", isDirectory: true)
+                .appendingPathComponent("Luban_\(timestamp)", isDirectory: true)
             outputDirectoryURL = outputDir
         }
 
@@ -346,10 +344,21 @@ final class LubanCompressionModel {
 
                 // 最低压缩大小：低于阈值直接跳过
                 if item.byteCount < minimumCompressionBytes {
+                    let skippedDestination: String?
+                    if shouldReplace {
+                        skippedDestination = item.id.path
+                    } else if let outputDir {
+                        let target = outputDir.appendingPathComponent(item.relativePath)
+                            .deletingPathExtension().appendingPathExtension("jpg")
+                        skippedDestination = target.path
+                    } else {
+                        skippedDestination = nil
+                    }
                     self.updateItem(item.id) { updated in
                         updated.status = .skipped
                         updated.compressedByteCount = item.byteCount
                         updated.compressionPercentage = 0
+                        updated.destinationPath = skippedDestination
                     }
                     continue
                 }
@@ -531,7 +540,7 @@ struct LubanCompressionView: View {
 
                 Spacer()
 
-                Toggle("自动替换原图", isOn: $model.replaceOriginals)
+                Toggle("自动替换原图路径", isOn: $model.replaceOriginals)
                     .toggleStyle(.switch)
                     .disabled(model.isRunning || model.isScanning)
             }
@@ -733,7 +742,9 @@ private struct LubanTaskRow: View {
             showsPreviewButton: item.status == .success,
             onPreview: { isPreviewPresented = true },
             onRevealSource: onRevealSource,
-            onRevealDestination: nil
+            onRevealDestination: { url in
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            }
         )
         .sheet(isPresented: $isPreviewPresented) {
             LubanImagePreview(imageURL: item.id)

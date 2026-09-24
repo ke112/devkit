@@ -264,6 +264,7 @@ struct DevKitTests {
             HomeFeatureSetting(feature: .simulatorManagement, isVisible: true),
             HomeFeatureSetting(feature: .appStoreRelease, isVisible: true),
             HomeFeatureSetting(feature: .tinyPNG, isVisible: true),
+            HomeFeatureSetting(feature: .lubanCompression, isVisible: true),
             HomeFeatureSetting(feature: .webPConversion, isVisible: true),
             HomeFeatureSetting(feature: .mediaCompression, isVisible: true),
             HomeFeatureSetting(feature: .watermarkRemoval, isVisible: false),
@@ -282,6 +283,7 @@ struct DevKitTests {
             HomeFeatureSetting(feature: .simulatorManagement, isVisible: true),
             HomeFeatureSetting(feature: .appStoreRelease, isVisible: true),
             HomeFeatureSetting(feature: .tinyPNG, isVisible: true),
+            HomeFeatureSetting(feature: .lubanCompression, isVisible: true),
             HomeFeatureSetting(feature: .webPConversion, isVisible: true),
             HomeFeatureSetting(feature: .mediaCompression, isVisible: true),
             HomeFeatureSetting(feature: .watermarkRemoval, isVisible: false),
@@ -518,7 +520,7 @@ struct DevKitTests {
 
         #expect(
             settings.map(\.feature)
-                == [.imageOverlay, .simulatorManagement, .appStoreRelease, .tinyPNG, .webPConversion, .mediaCompression, .watermarkRemoval, .idPhoto]
+                == [.imageOverlay, .simulatorManagement, .appStoreRelease, .tinyPNG, .lubanCompression, .webPConversion, .mediaCompression, .watermarkRemoval, .idPhoto]
         )
     }
 
@@ -624,7 +626,7 @@ struct DevKitTests {
             ),
         ]
 
-        #expect(model.minimumCompressionSizeKB == 100)
+        #expect(model.minimumCompressionSizeKB == 0)
         model.minimumCompressionSizeKB = 125
 
         #expect(model.imageItems[0].status == .skipped)
@@ -638,10 +640,10 @@ struct DevKitTests {
         #expect(model.minimumCompressionSizeKB == TinyPNGModel.maximumMinimumCompressionSizeKB)
     }
 
-    @Test func tinyPNGDefaultsToReplacingOriginals() {
+    @Test func tinyPNGDefaultsToTimestampedOutputFolder() {
         let model = TinyPNGModel()
 
-        #expect(model.replaceOriginals)
+        #expect(!model.replaceOriginals)
     }
 
     @Test func tinyPNGFolderScanCanRunOffTheMainActor() async throws {
@@ -868,9 +870,9 @@ struct DevKitTests {
         let model = WebPConversionModel(preferencesDefaults: defaults)
 
         #expect(model.quality == 80)
-        #expect(model.minimumCompressionSizeKB == 100)
+        #expect(model.minimumCompressionSizeKB == 0)
         #expect(model.maximumSideLength == 0)
-        #expect(model.replaceOriginals)
+        #expect(!model.replaceOriginals)
 
         model.quality = 150
         #expect(model.quality == 100)

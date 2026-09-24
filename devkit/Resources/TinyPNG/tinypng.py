@@ -2,7 +2,7 @@
 """
 TinyPNG 批量压缩工具
 用法: python3 tinypng.py <文件或目录路径...>
-输出: 单根输入在同级生成 <原名>_<时间戳>；多根输入统一生成 TinyPNG_<时间戳>
+输出: 非替换模式默认写入输入同级时间戳文件夹；DevKit 传入 --output-dir 时统一写入该目录下 TinyPNG_<时间戳>
 失败的图片会记录到 JSON 文件并自动重试直到全部成功
 
 大概比例:
@@ -367,8 +367,13 @@ def main():
     parser.add_argument(
         "--min-size-kb",
         type=int,
-        default=100,
-        help="小于此大小（KB）的图片跳过压缩，默认 100",
+        default=0,
+        help="小于此大小（KB）的图片跳过压缩，默认 0",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="",
+        help="非替换模式的输出根目录；缺省仍为输入同级",
     )
     args = parser.parse_args()
 
@@ -425,9 +430,12 @@ def main():
         used_names.add(name.casefold())
         root_names[root] = name
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    unified_base = Path(args.output_dir).expanduser() if args.output_dir else None
     output_dir: Path | None
     if replace_originals:
         output_dir = None
+    elif unified_base is not None:
+        output_dir = unified_base / f"TinyPNG_{timestamp}"
     elif len(input_roots) == 1:
         root = input_roots[0]
         base_name = root.stem if root.is_file() else root.name
