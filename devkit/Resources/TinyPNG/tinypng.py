@@ -171,8 +171,10 @@ def compress_image(src_path: Path, dst_path: Path, session: requests.Session, li
         "after": 0,
         "ok": False,
         "error": "",
+        "elapsed": 0.0,
     }
 
+    started_at = time.time()
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -220,6 +222,7 @@ def compress_image(src_path: Path, dst_path: Path, session: requests.Session, li
 
             result["after"] = dst_path.stat().st_size
             result["ok"] = True
+            result["elapsed"] = round(time.time() - started_at, 2)
             limiter.on_success()
             return result
 
@@ -341,9 +344,11 @@ def run_batch(tasks: list[tuple[Path, Path]], total_all: int, done_offset: int, 
             print(f"  [{done_offset + done_count}/{total_all}] {name}  {status}  ⏱ {elapsed}")
             print("EVENT " + json.dumps({
                 "src": r["src"],
+                "dst": r["dst"],
                 "ok": r["ok"],
                 "before": r["before"],
                 "after": r["after"],
+                "elapsed": r.get("elapsed", 0.0),
                 "error": r["error"],
             }, ensure_ascii=False, separators=(",", ":")))
 

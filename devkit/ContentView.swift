@@ -147,7 +147,7 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
         case .webPConversion:
             "图片转为 WebP 格式"
         case .mediaCompression:
-            "压缩视频与动图"
+            "压缩 MP4、MOV 视频"
         case .watermarkRemoval:
             "智能识别并去除水印"
         case .idPhoto:

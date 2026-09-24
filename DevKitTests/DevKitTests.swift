@@ -529,52 +529,18 @@ struct DevKitTests {
         try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        try Data([0x00]).write(to: directory.appending(path: "one.jpg"))
-        try Data([0x00]).write(to: nested.appending(path: "two.png"))
+        try Data([0x00]).write(to: directory.appending(path: "one.mp4"))
+        try Data([0x00]).write(to: nested.appending(path: "two.mov"))
         try Data([0x00]).write(to: directory.appending(path: "notes.txt"))
 
-        let compressor = MediaImageCompressor()
-        let result = compressor.collectImages(from: [directory, nested])
+        let compressor = MediaVideoCompressor()
+        let result = compressor.collectVideos(from: [directory, nested])
 
-        #expect(Set(result.map(\.url.lastPathComponent)) == Set(["one.jpg", "two.png"]))
+        #expect(Set(result.map(\.url.lastPathComponent)) == Set(["one.mp4", "two.mov"]))
         #expect(
             Dictionary(uniqueKeysWithValues: result.map { ($0.url.lastPathComponent, $0.relativeDir) })
-                == ["one.jpg": nil, "two.png": "nested"]
+                == ["one.mp4": nil, "two.mov": "nested"]
         )
-    }
-
-    @Test func mediaCompressionCopiesImageAtTargetBoundary() throws {
-        let sourceDirectory = FileManager.default.temporaryDirectory
-            .appending(path: "DevKitTests-MediaCompression-\(UUID().uuidString)", directoryHint: .isDirectory)
-        let outputDirectory = sourceDirectory.appending(path: "output", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: sourceDirectory) }
-
-        let image = NSImage(size: NSSize(width: 2, height: 2))
-        image.lockFocus()
-        NSColor.systemBlue.setFill()
-        NSRect(origin: .zero, size: image.size).fill()
-        image.unlockFocus()
-        guard let data = image.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: data),
-              let pngData = bitmap.representation(using: .png, properties: [:]) else {
-            throw CocoaError(.coderReadCorrupt)
-        }
-        let sourceURL = sourceDirectory.appending(path: "sample.png")
-        try pngData.write(to: sourceURL)
-
-        let result = try MediaImageCompressor().compressImage(
-            at: sourceURL,
-            relativeDir: nil,
-            config: MediaImageCompressionConfig(
-                targetBytes: Int64(pngData.count),
-                outputFormat: .auto,
-                batchDirectory: outputDirectory
-            )
-        )
-
-        #expect(result.kind == .copiedUnderSize)
-        #expect(try Data(contentsOf: result.destination) == pngData)
     }
 
     @Test func mediaVideoQualityUsesQualityPresets() {
@@ -595,10 +561,6 @@ struct DevKitTests {
     @Test func mediaCompressionUsesDevKitOutputDirectory() {
         let baseDirectory = URL(fileURLWithPath: "/tmp/DevKitOutputBase", isDirectory: true)
 
-        #expect(
-            MediaImageCompressor.makeBatchDirectory(under: baseDirectory)
-                == baseDirectory.appending(path: "DevKit", directoryHint: .isDirectory)
-        )
         #expect(
             MediaVideoCompressor.makeBatchDirectory(under: baseDirectory)
                 == baseDirectory.appending(path: "DevKit", directoryHint: .isDirectory)

@@ -9,11 +9,10 @@ struct WebPConversionView: View {
     @State private var model = WebPConversionModel()
     @State private var isImporterPresented = false
     @State private var isDropTargeted = false
-    @State private var isStatusPresented = false
     @State private var isLeaveConfirmationPresented = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("WebP 图片转换")
                     .font(.largeTitle.bold())
@@ -37,15 +36,15 @@ struct WebPConversionView: View {
 
                 HStack(spacing: 8) {
                     Text("最低转换大小")
-                    TextField("100", value: $model.minimumCompressionSizeKB, format: .number)
-                        .frame(width: 64)
+                    TextField("0", value: $model.minimumCompressionSizeKB, format: .number)
+                        .frame(width: 72)
                         .textFieldStyle(.roundedBorder)
                         .multilineTextAlignment(.trailing)
                     Text("KB 以上才转换")
                         .foregroundStyle(.secondary)
                 }
                 .disabled(model.isRunning || model.isScanning)
-                .help("小于此大小的图片会跳过转换")
+                .help("小于此大小的图片会跳过转换，0 表示全部转换")
 
                 HStack(spacing: 8) {
                     Text("最长边")
@@ -58,9 +57,16 @@ struct WebPConversionView: View {
                 }
                 .disabled(model.isRunning || model.isScanning)
                 .help("最长边超过该像素时按比例缩小，适合网络加载图片进一步减小体积")
+
+                Spacer()
+
+                Toggle("自动替换原图", isOn: $model.replaceOriginals)
+                    .toggleStyle(.switch)
+                    .help("开启后转换成功的图片会替换原文件；关闭后生成同级输出文件夹")
+                    .disabled(model.isRunning || model.isScanning)
             }
 
-            WebPDropArea(isTargeted: $isDropTargeted)
+            ImageCompressionDropArea(isTargeted: $isDropTargeted, subtitle: "PNG、JPG、JPEG，转换为 WebP 格式")
             .dropDestination(for: URL.self) { urls, _ in
                 guard !urls.isEmpty else { return false }
                 return model.select(urls: urls)
@@ -68,24 +74,11 @@ struct WebPConversionView: View {
                 isDropTargeted = targeted
             }
 
-            selectionSummary
-
             if !model.selectedURLs.isEmpty {
                 HStack(spacing: 12) {
                     Label("已选择 \(model.imageItems.count) 张图片", systemImage: "photo.stack")
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Toggle("自动替换原图", isOn: $model.replaceOriginals)
-                        .toggleStyle(.switch)
-                        .help("开启后转换成功的图片会替换原文件；关闭后生成同级输出文件夹")
-                        .disabled(model.isRunning || model.isScanning)
-                    Button {
-                        isStatusPresented = true
-                    } label: {
-                        Label("转换状态", systemImage: "list.bullet.rectangle")
-                    }
-                    .disabled(model.imageItems.isEmpty)
-
                     Button {
                         model.clearSelection()
                     } label: {
@@ -161,6 +154,16 @@ struct WebPConversionView: View {
                 .disabled(!model.canRun)
             }
 
+            if !model.imageItems.isEmpty {
+                List(model.imageItems) { item in
+                    WebPTaskRow(item: item) {
+                        model.revealSource(for: item)
+                    }
+                }
+                .listStyle(.inset)
+                .frame(minHeight: 200)
+            }
+
             Spacer(minLength: 0)
         }
         .padding(32)
@@ -182,9 +185,6 @@ struct WebPConversionView: View {
             if (model.isRunning && !model.isStopping) || model.isScanning {
                 model.stop()
             }
-        }
-        .sheet(isPresented: $isStatusPresented) {
-            WebPStatusSheet(model: model)
         }
         .fileImporter(
             isPresented: $isImporterPresented,
@@ -285,169 +285,35 @@ struct WebPConversionView: View {
     }
 }
 
-private struct WebPDropArea: View {
-    @Binding var isTargeted: Bool
-
-    var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "arrow.down.doc")
-                .font(.system(size: 38, weight: .light))
-                .foregroundStyle(isTargeted ? Color.accentColor : .secondary)
-            Text("拖入图片或文件夹，可一次拖入多个")
-                .font(.title3.weight(.semibold))
-            Text("PNG、JPG、JPEG、TIFF、BMP、GIF、HEIC，再次拖入可追加")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, minHeight: 200)
-        .background(isTargeted ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(
-                    isTargeted ? Color.accentColor : Color(nsColor: .separatorColor),
-                    style: StrokeStyle(lineWidth: isTargeted ? 2 : 1, dash: [8])
-                )
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .contentShape(Rectangle())
-    }
-}
-
-private struct WebPStatusSheet: View {
-    @Environment(\.dismiss) private var dismiss
-
-    let model: WebPConversionModel
-    @State private var isLogExpanded = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("转换状态")
-                        .font(.title2.bold())
-                    Text(model.selectedURLs.map(\.path).joined(separator: "\n"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .truncationMode(.middle)
-                }
-
-                Spacer()
-
-                if model.outputDirectoryURL != nil {
-                    Button {
-                        model.revealOutputDirectory()
-                    } label: {
-                        Label("查看输出目录", systemImage: "folder")
-                    }
-                    .help("在 Finder 中显示转换结果")
-                }
-
-                Button("完成") {
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
-            }
-
-            List(model.imageItems) { item in
-                WebPImageStatusRow(item: item) {
-                    model.revealSource(for: item)
-                }
-            }
-            .listStyle(.inset)
-            .frame(minHeight: 260)
-
-            DisclosureGroup("执行日志", isExpanded: $isLogExpanded) {
-                ScrollView([.vertical, .horizontal]) {
-                    Text(model.output.isEmpty ? "尚未执行" : model.output)
-                        .font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                        .padding(10)
-                }
-                .frame(minHeight: 140, maxHeight: 240)
-                .background(Color(nsColor: .textBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
-                }
-            }
-        }
-        .padding(24)
-        .frame(minWidth: 720, minHeight: 520)
-    }
-}
-
-private struct WebPImageStatusRow: View {
+private struct WebPTaskRow: View {
     let item: WebPImageItem
     let onRevealSource: () -> Void
     @State private var isPreviewPresented = false
 
-    private var thumbnail: NSImage? {
-        NSImage(contentsOf: item.id)
-    }
-
     var body: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(item.relativePath)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-                Group {
-                    if let convertedByteCount = item.convertedByteCount,
-                       let conversionPercentage = item.conversionPercentage {
-                        Text(
-                            "原图：\(TinyPNGFormat.bytes(item.byteCount))  "
-                                + "转换后：\(TinyPNGFormat.bytes(convertedByteCount))  "
-                                + "减少：\(TinyPNGFormat.percent(conversionPercentage))"
-                        )
-                    } else {
-                        Text("原图：\(TinyPNGFormat.bytes(item.byteCount))")
-                    }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-
-            Spacer(minLength: 12)
-
-            Label(item.status.title, systemImage: item.status.systemImage)
-                .foregroundStyle(item.status.color)
-                .font(.caption)
-
-            Button {
-                isPreviewPresented = true
-            } label: {
-                Group {
-                    if let thumbnail {
-                        Image(nsImage: thumbnail)
-                            .resizable()
-                            .scaledToFill()
-                    } else {
-                        Image(systemName: "photo")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .frame(width: 38, height: 38)
-                .clipped()
-                .background(Color(nsColor: .controlBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 5))
-            }
-            .buttonStyle(.plain)
-            .help("放大查看图片")
-
-            Button(action: onRevealSource) {
-                Image(systemName: "folder")
-            }
-            .buttonStyle(.borderless)
-            .help("在 Finder 中显示原图")
-        }
-        .padding(.vertical, 3)
+        ImageCompressionTaskRow(
+            thumbnailURL: item.id,
+            title: item.relativePath,
+            sizeSummary: sizeSummary,
+            elapsedText: CompressionElapsedFormatter.seconds(item.elapsedSeconds),
+            destinationPath: item.destinationPath,
+            state: .label(item.status.title, item.status.color),
+            showsPreviewButton: item.status == .success,
+            onPreview: { isPreviewPresented = true },
+            onRevealSource: onRevealSource,
+            onRevealDestination: nil
+        )
         .sheet(isPresented: $isPreviewPresented) {
             WebPImagePreview(imageURL: item.id)
         }
+    }
+
+    private var sizeSummary: String? {
+        if let convertedByteCount = item.convertedByteCount,
+           let conversionPercentage = item.conversionPercentage {
+            return "原图：\(TinyPNGFormat.bytes(item.byteCount))  转换后：\(TinyPNGFormat.bytes(convertedByteCount))  减少：\(TinyPNGFormat.percent(conversionPercentage))"
+        }
+        return "原图：\(TinyPNGFormat.bytes(item.byteCount))"
     }
 }
 
@@ -464,10 +330,8 @@ private struct WebPImagePreview: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer()
-                Button("完成") {
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
+                Button("完成") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
             }
 
             if let image = NSImage(contentsOf: imageURL) {
@@ -561,6 +425,8 @@ struct WebPImageItem: Identifiable, Equatable {
     var status: WebPImageConversionStatus
     var convertedByteCount: Int64? = nil
     var conversionPercentage: Double? = nil
+    var elapsedSeconds: Double? = nil
+    var destinationPath: String? = nil
 }
 
 struct WebPConversionStats: Equatable {
@@ -669,11 +535,11 @@ enum WebPInputScanner {
 @Observable
 final class WebPConversionModel {
     static let defaultQuality = 80
-    static let defaultMinimumCompressionSizeKB = 100
+    static let defaultMinimumCompressionSizeKB = 0
     static let defaultMaximumSideLength = 0
     static let maximumMinimumCompressionSizeKB = Int(Int64.max / 1024)
     private static let qualityKey = "webp.quality"
-    private static let minimumCompressionSizeKey = "webp.minimumCompressionSizeKB"
+    private static let minimumCompressionSizeKey = "webp.minimumCompressionSizeKB.v2"
     private static let maximumSideLengthKey = "webp.maximumSideLength"
 
     var selectedURLs: [URL] = []
@@ -1205,6 +1071,10 @@ final class WebPConversionModel {
         }
 
         var item = imageItems[index]
+        if let dst = event.dst {
+            item.destinationPath = dst
+        }
+        item.elapsedSeconds = event.elapsed
         if event.ok {
             item.status = .success
             item.convertedByteCount = event.after
@@ -1231,10 +1101,12 @@ extension WebPImageItem {
 
 private struct WebPProcessEvent: Decodable {
     let src: String
+    let dst: String?
     let ok: Bool
     let before: Int64
     let after: Int64
     let skipped: Bool
+    let elapsed: Double?
     let error: String
 }
 

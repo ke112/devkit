@@ -78,7 +78,7 @@ def format_elapsed(seconds: float) -> str:
         return f"{s}s"
 
 
-def emit_event(src: Path, dst: Path, before: int, after: int, ok: bool, skipped: bool, error: str):
+def emit_event(src: Path, dst: Path, before: int, after: int, ok: bool, skipped: bool, error: str, elapsed: float = 0.0):
     """输出单张图片的 JSON 事件行，供 DevKit 界面实时刷新"""
     print("EVENT " + json.dumps({
         "src": str(src),
@@ -87,6 +87,7 @@ def emit_event(src: Path, dst: Path, before: int, after: int, ok: bool, skipped:
         "after": after,
         "ok": ok,
         "skipped": skipped,
+        "elapsed": round(elapsed, 2),
         "error": error,
     }, ensure_ascii=False, separators=(",", ":")), flush=True)
 
@@ -181,7 +182,10 @@ def convert_image(src_path: Path, dst_path: Path, quality: int, max_side: int, r
         "ok": False,
         "skipped": False,
         "error": "",
+        "elapsed": 0.0,
     }
+
+    started_at = time.time()
 
     temp_output = dst_path.parent / f".{src_path.stem}.webp.tmp"
     temp_output.parent.mkdir(parents=True, exist_ok=True)
@@ -381,6 +385,7 @@ def main():
             result["ok"],
             result["skipped"],
             result["error"],
+            result.get("elapsed", 0.0),
         )
 
     total_all = len(tasks) + len(already_webp) + len(too_small)
