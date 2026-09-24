@@ -2,3 +2,5 @@
 /DerivedData/
 *.xcresult
 .derivedData/
+
+.build/

@@ -1,0 +1,15 @@
+{
+  "originHash" : "b44ee3ce0dad83539e73e659ea5c04a8de152eed7987f392d441489cb91c6a4d",
+  "pins" : [
+    {
+      "identity" : "luban-ios",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Curzibn/Luban-iOS",
+      "state" : {
+        "revision" : "665739045aa541e3db3cf849d504310d624914db",
+        "version" : "0.1.0"
+      }
+    }
+  ],
+  "version" : 3
+}

@@ -72,6 +72,8 @@ struct ContentView: View {
                     AppStoreReleaseView()
                 case .tinyPNG:
                     TinyPNGView()
+                case .lubanCompression:
+                    LubanCompressionView()
                 case .webPConversion:
                     WebPConversionView()
                 case .mediaCompression:
@@ -99,6 +101,7 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
     case imageOverlay
     case appStoreRelease
     case tinyPNG
+    case lubanCompression
     case webPConversion
     case mediaCompression
     case watermarkRemoval
@@ -116,6 +119,8 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
             "iOS App 发版"
         case .tinyPNG:
             "TinyPNG 图片压缩"
+        case .lubanCompression:
+            "Luban 图片压缩"
         case .webPConversion:
             "WebP 图片转换"
         case .mediaCompression:
@@ -137,6 +142,8 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
             "上传构建并提交审核"
         case .tinyPNG:
             "压缩 PNG 与 JPEG"
+        case .lubanCompression:
+            "微信策略本地压缩"
         case .webPConversion:
             "图片转为 WebP 格式"
         case .mediaCompression:
@@ -158,6 +165,8 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
             "shippingbox.and.arrow.backward"
         case .tinyPNG:
             "arrow.down.circle"
+        case .lubanCompression:
+            "wand.and.rays"
         case .webPConversion:
             "photo.badge.arrow.down"
         case .mediaCompression:

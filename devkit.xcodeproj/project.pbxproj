@@ -39,6 +39,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AA0000000000000000000003 /* Luban in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -90,6 +91,7 @@
 			);
 			name = devkit;
 			packageProductDependencies = (
+				AA0000000000000000000002 /* Luban */,
 			);
 			productName = devkit;
 			productReference = 6B48B88630219C0700745B86 /* DevKit.app */;
@@ -146,6 +148,9 @@
 			);
 			mainGroup = 6B48B87D30219C0700745B86;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				AA0000000000000000000001 /* XCRemoteSwiftPackageReference "Luban-iOS" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 6B48B88730219C0700745B86 /* Products */;
 			projectDirPath = "";
@@ -190,6 +195,32 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		AA0000000000000000000001 /* XCRemoteSwiftPackageReference "Luban-iOS" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/Curzibn/Luban-iOS";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.1.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		AA0000000000000000000002 /* Luban */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA0000000000000000000001 /* XCRemoteSwiftPackageReference "Luban-iOS" */;
+			productName = Luban;
+		};
+/* End XCSwiftPackageProductDependency section */
+
+/* Begin PBXBuildFile section */
+		AA0000000000000000000003 /* Luban in Frameworks */ = {
+			isa = PBXBuildFile;
+			productRef = AA0000000000000000000002 /* Luban */;
+		};
+/* End PBXBuildFile section */
 
 /* Begin PBXTargetDependency section */
 		7D000000000000000000000A /* PBXTargetDependency */ = {
