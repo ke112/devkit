@@ -4,3 +4,6 @@
 .derivedData/
 
 .build/
+
+# Local doc-tool draft folders (e.g. Feishu weekly report drafts)
+draft_*_folder/
