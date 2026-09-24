@@ -794,7 +794,7 @@ struct DevKitTests {
                 id: URL(fileURLWithPath: "/tmp/three.png"),
                 relativePath: "three.png",
                 byteCount: 1,
-                status: .uploading
+                status: .working
             ),
             TinyPNGImageItem(
                 id: URL(fileURLWithPath: "/tmp/four.png"),
@@ -948,7 +948,7 @@ struct DevKitTests {
                 id: URL(fileURLWithPath: "/tmp/three.jpg"),
                 relativePath: "three.jpg",
                 byteCount: 1_000,
-                status: .converting
+                status: .working
             ),
         ]
 

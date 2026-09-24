@@ -1,4 +1,3 @@
-import AppKit
 import Luban
 import Observation
 import SwiftUI
@@ -10,144 +9,34 @@ struct LubanImageItem: Identifiable, Equatable {
     let id: URL
     let relativePath: String
     let byteCount: Int64
-    var status: LubanCompressionStatus
+    var status: ImageCompressionTaskStatus
     var compressedByteCount: Int64?
     var compressionPercentage: Double?
     var elapsedSeconds: Double?
     var destinationPath: String?
 }
 
-enum LubanCompressionStatus: Equatable {
-    case waiting
-    case compressing
-    case success
-    case skipped
-    case cancelled
-    case failed(String)
-
-    var title: String {
-        switch self {
-        case .waiting: "等待压缩"
-        case .compressing: "压缩中"
-        case .success: "已完成"
-        case .skipped: "已跳过"
-        case .cancelled: "已停止"
-        case .failed: "失败"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .waiting: "clock"
-        case .compressing: "arrow.triangle.2.circlepath"
-        case .success: "checkmark.circle"
-        case .skipped: "exclamationmark.triangle"
-        case .cancelled: "stop.circle"
-        case .failed: "xmark.circle"
-        }
-    }
-
-    var color: Color {
-        switch self {
-        case .waiting: .secondary
-        case .compressing: .accentColor
-        case .success: .green
-        case .skipped: .orange
-        case .cancelled: .secondary
-        case .failed: .red
-        }
-    }
-}
-
-struct LubanCompressionStats: Equatable {
-    let beforeBytes: Int64
-    let afterBytes: Int64
-
-    var savedPercentage: Double {
-        guard beforeBytes > 0 else { return 0 }
-        return Double(beforeBytes - afterBytes) / Double(beforeBytes) * 100
-    }
-}
-
-struct LubanFormat {
-    static func bytes(_ value: Int64) -> String {
-        if value < 1024 { return "\(value) B" }
-        if value < 1024 * 1024 { return String(format: "%.1f KB", Double(value) / 1024) }
-        return String(format: "%.2f MB", Double(value) / (1024 * 1024))
-    }
-
-    static func percent(_ value: Double) -> String {
-        String(format: "%.1f%%", value)
-    }
+extension LubanImageItem: ImageCompressionTaskItem {
+    var resultByteCount: Int64? { compressedByteCount }
+    var resultPercentage: Double? { compressionPercentage }
 }
 
 // MARK: - 扫描
-
-struct LubanScannedImage: Sendable {
-    let url: URL
-    let byteCount: Int64
-}
-
-struct LubanScanResult: Sendable {
-    let images: [LubanScannedImage]
-}
 
 enum LubanInputScanner {
     /// Luban 输出 JPEG，本地压缩无上传大小限制，仅按最小压缩大小过滤
     nonisolated static let supportedExtensions: Set<String> = ["png", "jpg", "jpeg", "webp", "heic", "tiff", "bmp"]
 
     nonisolated static func accepts(_ url: URL) -> Bool {
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
-            return false
-        }
-        return isDirectory.boolValue || isSupportedImage(url)
+        ImageTaskScanner.accepts(url, supportedExtensions: supportedExtensions)
     }
 
     nonisolated static func isDirectory(_ url: URL) -> Bool {
-        var directory = ObjCBool(false)
-        _ = FileManager.default.fileExists(atPath: url.path, isDirectory: &directory)
-        return directory.boolValue
+        ImageTaskScanner.isDirectory(url)
     }
 
-    nonisolated static func isSupportedImage(_ url: URL) -> Bool {
-        supportedExtensions.contains(url.pathExtension.lowercased())
-    }
-
-    nonisolated static func scan(_ url: URL) -> LubanScanResult {
-        if !isDirectory(url) {
-            guard isSupportedImage(url),
-                  let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
-                  let fileSize = values.fileSize else {
-                return LubanScanResult(images: [])
-            }
-            return LubanScanResult(images: [LubanScannedImage(url: url, byteCount: Int64(fileSize))])
-        }
-
-        guard let enumerator = FileManager.default.enumerator(
-            at: url,
-            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
-            options: []
-        ) else {
-            return LubanScanResult(images: [])
-        }
-
-        var images: [LubanScannedImage] = []
-        for item in enumerator {
-            if Task.isCancelled { break }
-            guard let imageURL = item as? URL,
-                  isSupportedImage(imageURL),
-                  let values = try? imageURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
-                  values.isRegularFile == true,
-                  let fileSize = values.fileSize else {
-                continue
-            }
-            images.append(LubanScannedImage(url: imageURL, byteCount: Int64(fileSize)))
-        }
-        images.sort {
-            $0.url.path.localizedStandardCompare($1.url.path) == .orderedAscending
-        }
-        return LubanScanResult(images: images)
+    nonisolated static func scan(_ url: URL) -> ImageScanResult {
+        ImageTaskScanner.scan(url, supportedExtensions: supportedExtensions)
     }
 }
 
@@ -181,7 +70,7 @@ final class LubanCompressionModel {
     var alertMessage: String?
     var outputDirectoryURL: URL?
 
-    private var scanTask: Task<[LubanScanResult], Never>?
+    private var scanTask: Task<[ImageScanResult], Never>?
     private var activeSelectionToken = UUID()
     private var compressionTask: Task<Void, Never>?
     private let preferencesDefaults: UserDefaults
@@ -211,7 +100,7 @@ final class LubanCompressionModel {
         imageItems.reduce(into: 0) { count, item in
             switch item.status {
             case .success, .skipped: count += 1
-            case .waiting, .compressing, .cancelled, .failed: break
+            case .waiting, .working, .cancelled, .failed: break
             }
         }
     }
@@ -223,10 +112,10 @@ final class LubanCompressionModel {
 
     var completionPercentage: Int { Int((progressFraction * 100).rounded()) }
 
-    var compressionStats: LubanCompressionStats? {
+    var compressionStats: ImageCompressionSizeStats? {
         guard !imageItems.isEmpty,
               imageItems.allSatisfy({ $0.compressedByteCount != nil }) else { return nil }
-        return LubanCompressionStats(
+        return ImageCompressionSizeStats(
             beforeBytes: imageItems.reduce(0) { $0 + $1.byteCount },
             afterBytes: imageItems.reduce(0) { $0 + ($1.compressedByteCount ?? 0) }
         )
@@ -302,7 +191,7 @@ final class LubanCompressionModel {
 
     func run() {
         guard canRun else { return }
-        // 先取待压缩快照，再把状态切到 .compressing；循环内以 imageItems 的当前状态为准（中途停止后跳过）
+        // 先取待压缩快照，再把状态切到 .working；循环内以 imageItems 的当前状态为准（中途停止后跳过）
         let pendingItems = imageItems.filter {
             if case .waiting = $0.status { return true }
             return false
@@ -330,7 +219,7 @@ final class LubanCompressionModel {
         imageItems = imageItems.map { item in
             guard case .waiting = item.status else { return item }
             var updated = item
-            updated.status = .compressing
+            updated.status = .working
             return updated
         }
 
@@ -340,7 +229,7 @@ final class LubanCompressionModel {
             for item in pendingItems {
                 guard !Task.isCancelled else { break }
                 guard let current = self.imageItems.first(where: { $0.id == item.id }),
-                      case .compressing = current.status else { continue }
+                      case .working = current.status else { continue }
 
                 // 最低压缩大小：低于阈值直接跳过
                 if item.byteCount < minimumCompressionBytes {
@@ -439,7 +328,7 @@ final class LubanCompressionModel {
         operationStatus = "正在停止"
         operationStatusSystemImage = "stop.circle"
         imageItems = imageItems.map { item in
-            guard case .compressing = item.status else { return item }
+            guard case .working = item.status else { return item }
             var updated = item
             updated.status = .cancelled
             return updated
@@ -459,13 +348,8 @@ final class LubanCompressionModel {
         alertMessage = nil
     }
 
-    func revealOutputDirectory() {
-        guard let outputDirectoryURL else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([outputDirectoryURL])
-    }
-
-    func revealSource(for item: LubanImageItem) {
-        NSWorkspace.shared.activateFileViewerSelecting([item.id])
+    func showError(_ message: String) {
+        alertMessage = message
     }
 
     private func updateItem(_ id: URL, transform: (inout LubanImageItem) -> Void) {
@@ -516,122 +400,41 @@ struct LubanCompressionView: View {
     @State private var isLeaveConfirmationPresented = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Luban 图片压缩")
-                    .font(.largeTitle.bold())
-                Text("本地压缩，复刻微信朋友圈策略：短边 1440、非长图固定质量 60")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(spacing: 24) {
-                HStack(spacing: 8) {
-                    Text("最低压缩大小")
-                    TextField("0", value: $model.minimumCompressionSizeKB, format: .number)
-                        .frame(width: 72)
-                        .textFieldStyle(.roundedBorder)
-                        .multilineTextAlignment(.trailing)
-                    Text("KB 以上才压缩")
-                        .foregroundStyle(.secondary)
-                }
-                .disabled(model.isRunning || model.isScanning)
-                .help("小于此大小的图片会跳过压缩，0 表示全部压缩")
-
-                Spacer()
-
-                Toggle("自动替换原图路径", isOn: $model.replaceOriginals)
-                    .toggleStyle(.switch)
-                    .disabled(model.isRunning || model.isScanning)
-            }
-
-            ImageCompressionDropArea(isTargeted: $isDropTargeted, subtitle: "PNG、JPG、JPEG、WebP、HEIC 等，本地压缩无大小限制")
-                .dropDestination(for: URL.self) { urls, _ in
-                    guard !urls.isEmpty else { return false }
-                    model.select(urls: urls)
-                    return true
-                } isTargeted: { targeted in
-                    isDropTargeted = targeted
-                }
-
-            if !model.selectedURLs.isEmpty {
-                HStack(spacing: 12) {
-                    Label("已选择 \(model.imageItems.count) 张图片", systemImage: "photo.stack")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button {
-                        model.clearSelection()
-                    } label: {
-                        Label("清空列表", systemImage: "trash")
-                    }
-                    .disabled(model.isRunning || model.isScanning)
-                }
-            }
-
-            HStack(spacing: 12) {
-                HStack(spacing: 6) {
-                    Image(systemName: model.operationStatusSystemImage)
-                    Text(model.operationStatus)
-                }
-                .foregroundStyle(model.isError ? .red : .secondary)
-
-                if !model.imageItems.isEmpty {
-                    ProgressView(value: model.progressFraction)
-                        .frame(width: 110)
-                    Text("已完成 \(model.completedImageCount)/\(model.imageItems.count)（\(model.completionPercentage)%）")
-                        .font(.caption)
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                    if let stats = model.compressionStats {
-                        Text("总计：\(LubanFormat.bytes(stats.beforeBytes)) → \(LubanFormat.bytes(stats.afterBytes))（减少 \(LubanFormat.percent(stats.savedPercentage))）")
-                            .font(.caption)
-                            .foregroundStyle(.green)
-                    }
-                }
-
-                Spacer()
-
-                if model.isRunning || model.isScanning {
-                    Button {
-                        model.stop()
-                    } label: {
-                        Label(model.isStopping ? "正在停止" : "停止压缩", systemImage: "stop.circle")
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.red)
-                    .disabled(model.isStopping)
-                }
-
-                Button {
-                    isImporterPresented = true
-                } label: {
-                    Label("选择文件或文件夹", systemImage: "folder")
-                }
-                .disabled(model.isRunning || model.isScanning)
-
-                Button {
-                    model.run()
-                } label: {
-                    Label("开始压缩", systemImage: "arrow.down.circle")
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!model.canRun)
-            }
-
-            if !model.imageItems.isEmpty {
-                List(model.imageItems) { item in
-                    LubanTaskRow(item: item) {
-                        model.revealSource(for: item)
-                    }
-                }
-                .listStyle(.inset)
-                .frame(minHeight: 200)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(32)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        ImageCompressionPageLayout(
+            title: "Luban 图片压缩",
+            subtitle: "本地压缩，复刻微信朋友圈策略：短边 1440、非长图固定质量 60",
+            replaceHelp: "开启后压缩成功的图片会替换原文件；关闭后生成输出时间戳文件夹",
+            dropSubtitle: "PNG、JPG、JPEG、WebP、HEIC 等，本地压缩无大小限制",
+            stopLabel: "停止压缩",
+            minimumCompressionSizeKB: $model.minimumCompressionSizeKB,
+            replaceOriginals: $model.replaceOriginals,
+            isDropTargeted: $isDropTargeted,
+            isBusy: model.isRunning || model.isScanning,
+            isStopping: model.isStopping,
+            canRun: model.canRun,
+            selectedCount: model.imageItems.count,
+            showsSelectionRow: !model.selectedURLs.isEmpty,
+            operationStatus: model.operationStatus,
+            operationStatusSystemImage: model.operationStatusSystemImage,
+            isError: model.isError,
+            hasProgress: !model.imageItems.isEmpty,
+            progressFraction: model.progressFraction,
+            completedCount: model.completedImageCount,
+            totalCount: model.imageItems.count,
+            completionPercentage: model.completionPercentage,
+            statsText: statsText,
+            tasks: taskDisplayModels,
+            onDrop: { urls in
+                guard !urls.isEmpty else { return false }
+                model.select(urls: urls)
+                return true
+            },
+            onClear: { model.clearSelection() },
+            onStop: { model.stop() },
+            onChooseFiles: { isImporterPresented = true },
+            onStart: { model.run() },
+            extras: { EmptyView() }
+        )
         .navigationTitle("Luban 图片压缩")
         .navigationBarBackButtonHidden(true)
         .toolbar {
@@ -642,6 +445,7 @@ struct LubanCompressionView: View {
                     Image(systemName: "chevron.left")
                 }
                 .help("返回")
+                .accessibilityLabel("返回")
             }
         }
         .onDisappear {
@@ -660,7 +464,7 @@ struct LubanCompressionView: View {
                     model.select(urls: urls)
                 }
             case .failure(let error):
-                model.alertMessage = error.localizedDescription
+                model.showError(error.localizedDescription)
             }
         }
         .alert(
@@ -685,6 +489,17 @@ struct LubanCompressionView: View {
         }
     }
 
+    private var statsText: String? {
+        guard let stats = model.compressionStats else { return nil }
+        return "总计：\(CompressionBytesFormatter.bytes(stats.beforeBytes)) → "
+            + "\(CompressionBytesFormatter.bytes(stats.afterBytes)) "
+            + "（减少 \(CompressionBytesFormatter.percent(stats.savedPercentage))）"
+    }
+
+    private var taskDisplayModels: [ImageTaskDisplayModel] {
+        model.imageItems.map { ImageTaskDisplayModel(item: $0, resultLabel: "压缩后", verb: "压缩") }
+    }
+
     private func requestLeave() {
         guard model.isRunning || model.isScanning else {
             dismiss()
@@ -698,99 +513,8 @@ struct LubanCompressionView: View {
     }
 }
 
-private struct LubanDropArea: View {
-    @Binding var isTargeted: Bool
-
-    var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "arrow.down.doc")
-                .font(.system(size: 38, weight: .light))
-                .foregroundStyle(isTargeted ? Color.accentColor : .secondary)
-            Text("拖入图片或文件夹，可一次拖入多个")
-                .font(.title3.weight(.semibold))
-            Text("PNG、JPG、JPEG、WebP、HEIC 等，本地压缩无大小限制")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, minHeight: 220)
-        .background(isTargeted ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(
-                    isTargeted ? Color.accentColor : Color(nsColor: .separatorColor),
-                    style: StrokeStyle(lineWidth: isTargeted ? 2 : 1, dash: [8])
-                )
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .contentShape(Rectangle())
-    }
-}
-
-private struct LubanTaskRow: View {
-    let item: LubanImageItem
-    let onRevealSource: () -> Void
-    @State private var isPreviewPresented = false
-
-    var body: some View {
-        ImageCompressionTaskRow(
-            thumbnailURL: item.id,
-            title: item.relativePath,
-            sizeSummary: sizeSummary,
-            elapsedText: CompressionElapsedFormatter.seconds(item.elapsedSeconds),
-            destinationPath: item.destinationPath,
-            state: .label(item.status.title, item.status.color),
-            showsPreviewButton: item.status == .success,
-            onPreview: { isPreviewPresented = true },
-            onRevealSource: onRevealSource,
-            onRevealDestination: { url in
-                NSWorkspace.shared.activateFileViewerSelecting([url])
-            }
-        )
-        .sheet(isPresented: $isPreviewPresented) {
-            LubanImagePreview(imageURL: item.id)
-        }
-    }
-
-    private var sizeSummary: String? {
-        if let compressedByteCount = item.compressedByteCount,
-           let compressionPercentage = item.compressionPercentage {
-            return "原图：\(LubanFormat.bytes(item.byteCount))  压缩后：\(LubanFormat.bytes(compressedByteCount))  减少：\(LubanFormat.percent(compressionPercentage))"
-        }
-        return "原图：\(LubanFormat.bytes(item.byteCount))"
-    }
-}
-
-private struct LubanImagePreview: View {
-    @Environment(\.dismiss) private var dismiss
-
-    let imageURL: URL
-
-    var body: some View {
-        VStack(spacing: 16) {
-            HStack {
-                Text(imageURL.lastPathComponent)
-                    .font(.headline)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer()
-                Button("完成") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-            }
-
-            if let image = NSImage(contentsOf: imageURL) {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ContentUnavailableView(
-                    "无法读取图片",
-                    systemImage: "photo.slash",
-                    description: Text(imageURL.path)
-                )
-            }
-        }
-        .padding(24)
-        .frame(minWidth: 720, minHeight: 560)
+#Preview {
+    NavigationStack {
+        LubanCompressionView()
     }
 }

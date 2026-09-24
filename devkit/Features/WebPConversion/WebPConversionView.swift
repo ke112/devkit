@@ -12,16 +12,42 @@ struct WebPConversionView: View {
     @State private var isLeaveConfirmationPresented = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("WebP 图片转换")
-                    .font(.largeTitle.bold())
-                Text("默认输出到 ~/Desktop/DevKitOutput 时间戳文件夹，仅当 WebP 更小时才替换；开启后替换原图")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(spacing: 24) {
+        ImageCompressionPageLayout(
+            title: "WebP 图片转换",
+            subtitle: "默认输出到 ~/Desktop/DevKitOutput 时间戳文件夹，仅当 WebP 更小时才替换；开启后替换原图",
+            minimumLabel: "最低转换大小",
+            minimumSuffix: "KB 以上才转换",
+            replaceHelp: "开启后转换成功的图片会替换原文件；关闭后生成输出时间戳文件夹",
+            dropSubtitle: "PNG、JPG、JPEG，转换为 WebP 格式",
+            stopLabel: "停止转换",
+            startLabel: "开始转换",
+            minimumCompressionSizeKB: $model.minimumCompressionSizeKB,
+            replaceOriginals: $model.replaceOriginals,
+            isDropTargeted: $isDropTargeted,
+            isBusy: model.isRunning || model.isScanning,
+            isStopping: model.isStopping,
+            canRun: model.canRun,
+            selectedCount: model.imageItems.count,
+            showsSelectionRow: !model.selectedURLs.isEmpty,
+            operationStatus: model.operationStatus,
+            operationStatusSystemImage: model.operationStatusSystemImage,
+            isError: model.isError,
+            hasProgress: model.hasProgress,
+            progressFraction: model.progressFraction,
+            completedCount: model.completedImageCount,
+            totalCount: model.imageItems.count,
+            completionPercentage: model.completionPercentage,
+            statsText: statsText,
+            tasks: taskDisplayModels,
+            onDrop: { urls in
+                guard !urls.isEmpty else { return false }
+                return model.select(urls: urls)
+            },
+            onClear: { model.clearSelection() },
+            onStop: { model.stop() },
+            onChooseFiles: { isImporterPresented = true },
+            onStart: { model.run() },
+            extras: {
                 HStack(spacing: 8) {
                     Text("转换质量")
                     TextField("80", value: $model.quality, format: .number)
@@ -31,20 +57,7 @@ struct WebPConversionView: View {
                     Text("（建议 75-85）")
                         .foregroundStyle(.secondary)
                 }
-                .disabled(model.isRunning || model.isScanning)
                 .help("WebP 有损质量，75-85 在画质与体积之间性价比最高")
-
-                HStack(spacing: 8) {
-                    Text("最低转换大小")
-                    TextField("0", value: $model.minimumCompressionSizeKB, format: .number)
-                        .frame(width: 72)
-                        .textFieldStyle(.roundedBorder)
-                        .multilineTextAlignment(.trailing)
-                    Text("KB 以上才转换")
-                        .foregroundStyle(.secondary)
-                }
-                .disabled(model.isRunning || model.isScanning)
-                .help("小于此大小的图片会跳过转换，0 表示全部转换")
 
                 HStack(spacing: 8) {
                     Text("最长边")
@@ -55,119 +68,9 @@ struct WebPConversionView: View {
                     Text("px，0 不缩放")
                         .foregroundStyle(.secondary)
                 }
-                .disabled(model.isRunning || model.isScanning)
                 .help("最长边超过该像素时按比例缩小，适合网络加载图片进一步减小体积")
-
-                Spacer()
-
-                Toggle("自动替换原图路径", isOn: $model.replaceOriginals)
-                    .toggleStyle(.switch)
-                    .help("开启后转换成功的图片会替换原文件；关闭后生成同级输出文件夹")
-                    .disabled(model.isRunning || model.isScanning)
             }
-
-            ImageCompressionDropArea(isTargeted: $isDropTargeted, subtitle: "PNG、JPG、JPEG，转换为 WebP 格式")
-            .dropDestination(for: URL.self) { urls, _ in
-                guard !urls.isEmpty else { return false }
-                return model.select(urls: urls)
-            } isTargeted: { targeted in
-                isDropTargeted = targeted
-            }
-
-            if !model.selectedURLs.isEmpty {
-                HStack(spacing: 12) {
-                    Label("已选择 \(model.imageItems.count) 张图片", systemImage: "photo.stack")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button {
-                        model.clearSelection()
-                    } label: {
-                        Label("清空列表", systemImage: "trash")
-                    }
-                    .disabled(model.isRunning || model.isScanning)
-                }
-            }
-
-            HStack(spacing: 12) {
-                HStack(spacing: 6) {
-                    Image(systemName: model.operationStatusSystemImage)
-                        .rotationEffect(.degrees(model.isRunning || model.isScanning ? 360 : 0))
-                        .animation(
-                            model.isRunning || model.isScanning
-                                ? .linear(duration: 1).repeatForever(autoreverses: false)
-                                : .default,
-                            value: model.isRunning || model.isScanning
-                        )
-                    Text(model.operationStatus)
-                }
-                .foregroundStyle(model.isError ? .red : .secondary)
-
-                if model.hasProgress {
-                    HStack(spacing: 8) {
-                        ProgressView(value: model.progressFraction)
-                            .frame(width: 110)
-                        Text("已完成 \(model.completedImageCount)/\(model.imageItems.count)（\(model.completionPercentage)%）")
-                            .font(.caption)
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                        if let stats = model.conversionStats {
-                            Text(
-                                "总计：\(TinyPNGFormat.bytes(stats.beforeBytes)) → "
-                                    + "\(TinyPNGFormat.bytes(stats.afterBytes)) "
-                                    + "（减少 \(TinyPNGFormat.percent(stats.savedPercentage))）"
-                            )
-                            .font(.caption)
-                            .foregroundStyle(.green)
-                        }
-                    }
-                }
-
-                Spacer()
-
-                if model.isRunning || model.isScanning {
-                    Button {
-                        model.stop()
-                    } label: {
-                        Label(
-                            model.isStopping ? "正在停止" : "停止转换",
-                            systemImage: "stop.circle"
-                        )
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.red)
-                    .disabled(model.isStopping)
-                }
-
-                Button {
-                    isImporterPresented = true
-                } label: {
-                    Label("选择文件或文件夹", systemImage: "folder")
-                }
-                .disabled(model.isRunning || model.isScanning)
-
-                Button {
-                    model.run()
-                } label: {
-                    Label("开始转换", systemImage: "arrow.down.circle")
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!model.canRun)
-            }
-
-            if !model.imageItems.isEmpty {
-                List(model.imageItems) { item in
-                    WebPTaskRow(item: item) {
-                        model.revealSource(for: item)
-                    }
-                }
-                .listStyle(.inset)
-                .frame(minHeight: 200)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(32)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        )
         .navigationTitle("WebP 图片转换")
         .navigationBarBackButtonHidden(true)
         .toolbar {
@@ -216,10 +119,21 @@ struct WebPConversionView: View {
                 model.stop()
                 dismiss()
             }
-            Button("继续转换", role: .cancel) {}
+            Button("继续压缩", role: .cancel) {}
         } message: {
             Text("当前任务尚未完成，离开后会停止转换。")
         }
+    }
+
+    private var statsText: String? {
+        guard let stats = model.conversionStats else { return nil }
+        return "总计：\(CompressionBytesFormatter.bytes(stats.beforeBytes)) → "
+            + "\(CompressionBytesFormatter.bytes(stats.afterBytes)) "
+            + "（减少 \(CompressionBytesFormatter.percent(stats.savedPercentage))）"
+    }
+
+    private var taskDisplayModels: [ImageTaskDisplayModel] {
+        model.imageItems.map { ImageTaskDisplayModel(item: $0, resultLabel: "转换后", verb: "转换") }
     }
 
     private func requestLeave() {
@@ -233,125 +147,6 @@ struct WebPConversionView: View {
             isLeaveConfirmationPresented = true
         }
     }
-
-    @ViewBuilder
-    private var selectionSummary: some View {
-        if !model.selectedURLs.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(model.selectedURLs, id: \.self) { url in
-                    Label(url.path, systemImage: WebPInputScanner.isDirectory(url) ? "folder" : "photo")
-                        .lineLimit(2)
-                        .truncationMode(.middle)
-                        .textSelection(.enabled)
-                }
-
-                if let summary = model.selectionSummary {
-                    HStack(spacing: 16) {
-                        Text("图片 \(summary.imageCount) 张")
-                        if summary.alreadyWebPCount > 0 {
-                            Label("\(summary.alreadyWebPCount) 张已是 WebP，将跳过", systemImage: "checkmark.seal")
-                                .foregroundStyle(.orange)
-                        }
-                        if summary.belowMinimumCount > 0 {
-                            Label(
-                                "\(summary.belowMinimumCount) 张小于最低大小，将跳过转换",
-                                systemImage: "arrow.down.right.and.arrow.up.left"
-                            )
-                            .foregroundStyle(.orange)
-                        }
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                    HStack(spacing: 16) {
-                        Text("转换前：\(TinyPNGFormat.bytes(model.totalOriginalByteCount))")
-                        if let stats = model.conversionStats {
-                            Text("转换后：\(TinyPNGFormat.bytes(stats.afterBytes))")
-                            Text("减少：\(TinyPNGFormat.percent(stats.savedPercentage))")
-                                .foregroundStyle(.green)
-                        } else if model.isRunning {
-                            Text("转换后：计算中")
-                        }
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-            }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-        }
-    }
-}
-
-private struct WebPTaskRow: View {
-    let item: WebPImageItem
-    let onRevealSource: () -> Void
-    @State private var isPreviewPresented = false
-
-    var body: some View {
-        ImageCompressionTaskRow(
-            thumbnailURL: item.id,
-            title: item.relativePath,
-            sizeSummary: sizeSummary,
-            elapsedText: CompressionElapsedFormatter.seconds(item.elapsedSeconds),
-            destinationPath: item.destinationPath,
-            state: .label(item.status.title, item.status.color),
-            showsPreviewButton: item.status == .success,
-            onPreview: { isPreviewPresented = true },
-            onRevealSource: onRevealSource,
-            onRevealDestination: { url in
-                NSWorkspace.shared.activateFileViewerSelecting([url])
-            }
-        )
-        .sheet(isPresented: $isPreviewPresented) {
-            WebPImagePreview(imageURL: item.id)
-        }
-    }
-
-    private var sizeSummary: String? {
-        if let convertedByteCount = item.convertedByteCount,
-           let conversionPercentage = item.conversionPercentage {
-            return "原图：\(TinyPNGFormat.bytes(item.byteCount))  转换后：\(TinyPNGFormat.bytes(convertedByteCount))  减少：\(TinyPNGFormat.percent(conversionPercentage))"
-        }
-        return "原图：\(TinyPNGFormat.bytes(item.byteCount))"
-    }
-}
-
-private struct WebPImagePreview: View {
-    @Environment(\.dismiss) private var dismiss
-
-    let imageURL: URL
-
-    var body: some View {
-        VStack(spacing: 16) {
-            HStack {
-                Text(imageURL.lastPathComponent)
-                    .font(.headline)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer()
-                Button("完成") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-            }
-
-            if let image = NSImage(contentsOf: imageURL) {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ContentUnavailableView(
-                    "无法读取图片",
-                    systemImage: "photo.slash",
-                    description: Text(imageURL.path)
-                )
-            }
-        }
-        .padding(24)
-        .frame(minWidth: 720, minHeight: 560)
-    }
 }
 
 struct WebPSelectionSummary: Equatable, Sendable {
@@ -360,176 +155,37 @@ struct WebPSelectionSummary: Equatable, Sendable {
     let belowMinimumCount: Int
 }
 
-enum WebPImageConversionStatus: Equatable {
-    case waiting
-    case converting
-    case success
-    case skipped
-    case cancelled
-    case failed(String)
-
-    var title: String {
-        switch self {
-        case .waiting:
-            "等待转换"
-        case .converting:
-            "转换中"
-        case .success:
-            "已完成"
-        case .skipped:
-            "已跳过"
-        case .cancelled:
-            "已停止"
-        case .failed:
-            "失败"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .waiting:
-            "clock"
-        case .converting:
-            "arrow.triangle.2.circlepath"
-        case .success:
-            "checkmark.circle"
-        case .skipped:
-            "exclamationmark.triangle"
-        case .cancelled:
-            "stop.circle"
-        case .failed:
-            "xmark.circle"
-        }
-    }
-
-    var color: Color {
-        switch self {
-        case .waiting:
-            .secondary
-        case .converting:
-            .accentColor
-        case .success:
-            .green
-        case .skipped:
-            .orange
-        case .cancelled:
-            .secondary
-        case .failed:
-            .red
-        }
-    }
-}
-
 struct WebPImageItem: Identifiable, Equatable {
     let id: URL
     let relativePath: String
     let byteCount: Int64
-    var status: WebPImageConversionStatus
+    var status: ImageCompressionTaskStatus
     var convertedByteCount: Int64? = nil
     var conversionPercentage: Double? = nil
     var elapsedSeconds: Double? = nil
     var destinationPath: String? = nil
 }
 
-struct WebPConversionStats: Equatable {
-    let beforeBytes: Int64
-    let afterBytes: Int64
-
-    var savedPercentage: Double {
-        guard beforeBytes > 0 else { return 0 }
-        return Double(beforeBytes - afterBytes) / Double(beforeBytes) * 100
-    }
-}
-
-struct WebPScannedImage: Sendable {
-    let url: URL
-    let byteCount: Int64
-    let isWebP: Bool
-}
-
-struct WebPScanResult: Sendable {
-    let images: [WebPScannedImage]
+extension WebPImageItem: ImageCompressionTaskItem {
+    var resultByteCount: Int64? { convertedByteCount }
+    var resultPercentage: Double? { conversionPercentage }
 }
 
 enum WebPInputScanner {
-    nonisolated static let defaultMinimumCompressionBytes: Int64 = 100 * 1024
     nonisolated static let supportedExtensions: Set<String> = [
         "png", "jpg", "jpeg", "tif", "tiff", "bmp", "gif", "heic", "heif", "webp",
     ]
 
     nonisolated static func accepts(_ url: URL) -> Bool {
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
-            return false
-        }
-        return isDirectory.boolValue || isSupportedImage(url)
+        ImageTaskScanner.accepts(url, supportedExtensions: supportedExtensions)
     }
 
     nonisolated static func isDirectory(_ url: URL) -> Bool {
-        var directory = ObjCBool(false)
-        _ = FileManager.default.fileExists(atPath: url.path, isDirectory: &directory)
-        return directory.boolValue
+        ImageTaskScanner.isDirectory(url)
     }
 
-    nonisolated static func scan(_ url: URL) -> WebPScanResult {
-        if !isDirectory(url) {
-            guard isSupportedImage(url),
-                  let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
-                  let fileSize = values.fileSize else {
-                return WebPScanResult(images: [])
-            }
-            return WebPScanResult(images: [
-                WebPScannedImage(
-                    url: url,
-                    byteCount: Int64(fileSize),
-                    isWebP: isWebPImage(url)
-                )
-            ])
-        }
-
-        guard let enumerator = FileManager.default.enumerator(
-            at: url,
-            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
-            options: []
-        ) else {
-            return WebPScanResult(images: [])
-        }
-
-        var images: [WebPScannedImage] = []
-        for item in enumerator {
-            if Task.isCancelled {
-                break
-            }
-            guard let imageURL = item as? URL,
-                  isSupportedImage(imageURL),
-                  let values = try? imageURL.resourceValues(
-                    forKeys: [.isRegularFileKey, .fileSizeKey]
-                  ),
-                  values.isRegularFile == true,
-                  let fileSize = values.fileSize else {
-                continue
-            }
-            images.append(
-                WebPScannedImage(
-                    url: imageURL,
-                    byteCount: Int64(fileSize),
-                    isWebP: isWebPImage(imageURL)
-                )
-            )
-        }
-
-        images.sort {
-            $0.url.path.localizedStandardCompare($1.url.path) == .orderedAscending
-        }
-        return WebPScanResult(images: images)
-    }
-
-    nonisolated private static func isSupportedImage(_ url: URL) -> Bool {
-        supportedExtensions.contains(url.pathExtension.lowercased())
-    }
-
-    nonisolated private static func isWebPImage(_ url: URL) -> Bool {
-        url.pathExtension.lowercased() == "webp"
+    nonisolated static func scan(_ url: URL) -> ImageScanResult {
+        ImageTaskScanner.scan(url, supportedExtensions: supportedExtensions)
     }
 }
 
@@ -588,7 +244,7 @@ final class WebPConversionModel {
     var alertMessage: String?
     var outputDirectoryURL: URL?
 
-    private var scanWorker: Task<[WebPScanResult], Never>?
+    private var scanWorker: Task<[ImageScanResult], Never>?
     private var pendingScanURLs: [URL] = []
     private var activeSelectionToken = UUID()
     private var outputEventBuffer = ""
@@ -627,7 +283,7 @@ final class WebPConversionModel {
             switch item.status {
             case .success, .skipped:
                 count += 1
-            case .waiting, .converting, .cancelled, .failed:
+            case .waiting, .working, .cancelled, .failed:
                 break
             }
         }
@@ -646,12 +302,12 @@ final class WebPConversionModel {
         imageItems.reduce(0) { $0 + $1.byteCount }
     }
 
-    var conversionStats: WebPConversionStats? {
+    var conversionStats: ImageCompressionSizeStats? {
         guard !imageItems.isEmpty,
               imageItems.allSatisfy({ $0.convertedByteCount != nil }) else {
             return nil
         }
-        return WebPConversionStats(
+        return ImageCompressionSizeStats(
             beforeBytes: totalOriginalByteCount,
             afterBytes: imageItems.reduce(0) { $0 + ($1.convertedByteCount ?? 0) }
         )
@@ -761,7 +417,7 @@ final class WebPConversionModel {
         imageItems = imageItems.map { item in
             guard case .waiting = item.status else { return item }
             var updated = item
-            updated.status = .converting
+            updated.status = .working
             return updated
         }
         output = ""
@@ -834,7 +490,7 @@ final class WebPConversionModel {
                 if result.terminationStatus == 0 {
                     finalizeSkippedItems()
                     imageItems = imageItems.map { item in
-                        guard case .converting = item.status else { return item }
+                        guard case .working = item.status else { return item }
                         var updated = item
                         updated.status = .success
                         return updated
@@ -849,7 +505,7 @@ final class WebPConversionModel {
                     operationStatusSystemImage = "checkmark.circle"
                 } else {
                     imageItems = imageItems.map { item in
-                        guard case .converting = item.status else { return item }
+                        guard case .working = item.status else { return item }
                         var updated = item
                         updated.status = .failed("脚本退出码 \(result.terminationStatus)")
                         return updated
@@ -870,7 +526,7 @@ final class WebPConversionModel {
                     return
                 }
                 imageItems = imageItems.map { item in
-                    guard case .converting = item.status else { return item }
+                    guard case .working = item.status else { return item }
                     var updated = item
                     updated.status = .failed(error.localizedDescription)
                     return updated
@@ -899,7 +555,7 @@ final class WebPConversionModel {
         operationStatus = "正在停止"
         operationStatusSystemImage = "stop.circle"
         imageItems = imageItems.map { item in
-            guard case .converting = item.status else { return item }
+            guard case .working = item.status else { return item }
             var updated = item
             updated.status = .cancelled
             return updated
@@ -922,15 +578,6 @@ final class WebPConversionModel {
         operationStatus = "请选择图片或文件夹"
         operationStatusSystemImage = "photo.on.rectangle"
         alertMessage = nil
-    }
-
-    func revealOutputDirectory() {
-        guard let outputDirectoryURL else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([outputDirectoryURL])
-    }
-
-    func revealSource(for item: WebPImageItem) {
-        NSWorkspace.shared.activateFileViewerSelecting([item.id])
     }
 
     func showError(_ message: String) {
@@ -989,7 +636,7 @@ final class WebPConversionModel {
         return imageURL.lastPathComponent
     }
 
-    private func shouldSkipAtScan(_ image: WebPScannedImage) -> Bool {
+    private func shouldSkipAtScan(_ image: ImageScannedImage) -> Bool {
         image.isWebP || image.byteCount < minimumCompressionSizeBytes
     }
 
@@ -1039,7 +686,7 @@ final class WebPConversionModel {
             switch item.status {
             case .waiting, .skipped:
                 break
-            case .success, .converting, .cancelled, .failed:
+            case .success, .working, .cancelled, .failed:
                 return item
             }
             var updated = item
@@ -1077,7 +724,7 @@ final class WebPConversionModel {
         let value = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard value.hasPrefix("EVENT "),
               let data = value.dropFirst("EVENT ".count).data(using: .utf8),
-              let event = try? JSONDecoder().decode(WebPProcessEvent.self, from: data) else {
+              let event = try? JSONDecoder().decode(ImageCompressionProcessEvent.self, from: data) else {
             return
         }
 
@@ -1094,11 +741,11 @@ final class WebPConversionModel {
         if event.ok {
             item.status = .success
             item.convertedByteCount = event.after
-            item.conversionPercentage = WebPConversionStats(
+            item.conversionPercentage = ImageCompressionSizeStats(
                 beforeBytes: event.before,
                 afterBytes: event.after
             ).savedPercentage
-        } else if event.skipped {
+        } else if event.skipped == true {
             item.status = .skipped
             item.convertedByteCount = event.before
             item.conversionPercentage = 0
@@ -1113,17 +760,6 @@ extension WebPImageItem {
     var isWebPSource: Bool {
         id.pathExtension.lowercased() == "webp"
     }
-}
-
-private struct WebPProcessEvent: Decodable {
-    let src: String
-    let dst: String?
-    let ok: Bool
-    let before: Int64
-    let after: Int64
-    let skipped: Bool
-    let elapsed: Double?
-    let error: String
 }
 
 #Preview {

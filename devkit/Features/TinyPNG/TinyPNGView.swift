@@ -12,138 +12,40 @@ struct TinyPNGView: View {
     @State private var isLeaveConfirmationPresented = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("TinyPNG 图片压缩")
-                    .font(.largeTitle.bold())
-                Text("默认输出到 ~/Desktop/DevKitOutput 时间戳文件夹；开启后压缩成功替换原图")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(spacing: 24) {
-                HStack(spacing: 8) {
-                    Text("最低压缩大小")
-                    TextField("0", value: $model.minimumCompressionSizeKB, format: .number)
-                        .frame(width: 72)
-                        .textFieldStyle(.roundedBorder)
-                        .multilineTextAlignment(.trailing)
-                    Text("KB 以上才压缩")
-                        .foregroundStyle(.secondary)
-                }
-                .disabled(model.isRunning || model.isScanning)
-                .help("小于此大小的图片会跳过压缩，0 表示全部压缩")
-
-                Spacer()
-
-                Toggle("自动替换原图路径", isOn: $model.replaceOriginals)
-                    .toggleStyle(.switch)
-                    .help("开启后压缩成功的图片会替换原文件；关闭后生成同级输出文件夹")
-                    .disabled(model.isRunning || model.isScanning)
-            }
-
-            ImageCompressionDropArea(isTargeted: $isDropTargeted)
-            .dropDestination(for: URL.self) { urls, _ in
+        ImageCompressionPageLayout(
+            title: "TinyPNG 图片压缩",
+            subtitle: "默认输出到 ~/Desktop/DevKitOutput 时间戳文件夹；开启后压缩成功替换原图",
+            replaceHelp: "开启后压缩成功的图片会替换原文件；关闭后生成输出时间戳文件夹",
+            dropSubtitle: "PNG、JPG、JPEG、WebP",
+            stopLabel: "停止压缩",
+            minimumCompressionSizeKB: $model.minimumCompressionSizeKB,
+            replaceOriginals: $model.replaceOriginals,
+            isDropTargeted: $isDropTargeted,
+            isBusy: model.isRunning || model.isScanning,
+            isStopping: model.isStopping,
+            canRun: model.canRun,
+            selectedCount: model.imageItems.count,
+            showsSelectionRow: !model.selectedURLs.isEmpty,
+            operationStatus: model.operationStatus,
+            operationStatusSystemImage: model.operationStatusSystemImage,
+            isError: model.isError,
+            hasProgress: model.hasProgress,
+            progressFraction: model.progressFraction,
+            completedCount: model.completedImageCount,
+            totalCount: model.imageItems.count,
+            completionPercentage: model.completionPercentage,
+            statsText: statsText,
+            tasks: taskDisplayModels,
+            onDrop: { urls in
                 guard !urls.isEmpty else { return false }
                 return model.select(urls: urls)
-            } isTargeted: { targeted in
-                isDropTargeted = targeted
-            }
-
-            if !model.selectedURLs.isEmpty {
-                HStack(spacing: 12) {
-                    Label("已选择 \(model.imageItems.count) 张图片", systemImage: "photo.stack")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button {
-                        model.clearSelection()
-                    } label: {
-                        Label("清空列表", systemImage: "trash")
-                    }
-                    .disabled(model.isRunning || model.isScanning)
-                }
-            }
-
-            HStack(spacing: 12) {
-                HStack(spacing: 6) {
-                    Image(systemName: model.operationStatusSystemImage)
-                        .rotationEffect(.degrees(model.isRunning || model.isScanning ? 360 : 0))
-                        .animation(
-                            model.isRunning || model.isScanning
-                                ? .linear(duration: 1).repeatForever(autoreverses: false)
-                                : .default,
-                            value: model.isRunning || model.isScanning
-                        )
-                    Text(model.operationStatus)
-                }
-                .foregroundStyle(model.isError ? .red : .secondary)
-
-                if model.hasProgress {
-                    HStack(spacing: 8) {
-                        ProgressView(value: model.progressFraction)
-                            .frame(width: 110)
-                        Text("已完成 \(model.completedImageCount)/\(model.imageItems.count)（\(model.completionPercentage)%）")
-                            .font(.caption)
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                        if let stats = model.compressionStats {
-                            Text(
-                                "总计：\(TinyPNGFormat.bytes(stats.beforeBytes)) → "
-                                    + "\(TinyPNGFormat.bytes(stats.afterBytes)) "
-                                    + "（减少 \(TinyPNGFormat.percent(stats.savedPercentage))）"
-                            )
-                            .font(.caption)
-                            .foregroundStyle(.green)
-                        }
-                    }
-                }
-
-                Spacer()
-
-                if model.isRunning || model.isScanning {
-                    Button {
-                        model.stop()
-                    } label: {
-                        Label(
-                            model.isStopping ? "正在停止" : "停止压缩",
-                            systemImage: "stop.circle"
-                        )
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.red)
-                    .disabled(model.isStopping)
-                }
-
-                Button {
-                    isImporterPresented = true
-                } label: {
-                    Label("选择文件或文件夹", systemImage: "folder")
-                }
-                .disabled(model.isRunning || model.isScanning)
-
-                Button {
-                    model.run()
-                } label: {
-                    Label("开始压缩", systemImage: "arrow.down.circle")
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!model.canRun)
-            }
-
-            if !model.imageItems.isEmpty {
-                List(model.imageItems) { item in
-                    TinyPNGTaskRow(item: item) {
-                        model.revealSource(for: item)
-                    }
-                }
-                .listStyle(.inset)
-                .frame(minHeight: 200)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(32)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            },
+            onClear: { model.clearSelection() },
+            onStop: { model.stop() },
+            onChooseFiles: { isImporterPresented = true },
+            onStart: { model.run() },
+            extras: { EmptyView() }
+        )
         .navigationTitle("TinyPNG 图片压缩")
         .navigationBarBackButtonHidden(true)
         .toolbar {
@@ -198,6 +100,17 @@ struct TinyPNGView: View {
         }
     }
 
+    private var statsText: String? {
+        guard let stats = model.compressionStats else { return nil }
+        return "总计：\(CompressionBytesFormatter.bytes(stats.beforeBytes)) → "
+            + "\(CompressionBytesFormatter.bytes(stats.afterBytes)) "
+            + "（减少 \(CompressionBytesFormatter.percent(stats.savedPercentage))）"
+    }
+
+    private var taskDisplayModels: [ImageTaskDisplayModel] {
+        model.imageItems.map { ImageTaskDisplayModel(item: $0, resultLabel: "压缩后", verb: "上传") }
+    }
+
     private func requestLeave() {
         guard model.isRunning || model.isScanning else {
             dismiss()
@@ -208,126 +121,6 @@ struct TinyPNGView: View {
         } else {
             isLeaveConfirmationPresented = true
         }
-    }
-
-    @ViewBuilder
-    private var selectionSummary: some View {
-        if !model.selectedURLs.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(model.selectedURLs.map(\.path).joined(separator: "\n"))
-                    .lineLimit(3)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-
-                if let summary = model.selectionSummary {
-                    HStack(spacing: 16) {
-                        Text("图片 \(summary.imageCount) 张")
-                        if summary.oversizedCount > 0 {
-                            Label(
-                                "\(summary.oversizedCount) 张超过 5 MB，将跳过上传",
-                                systemImage: "exclamationmark.triangle"
-                            )
-                            .foregroundStyle(.orange)
-                        }
-                        if summary.belowMinimumCount > 0 {
-                            Label(
-                                "\(summary.belowMinimumCount) 张小于最低大小，将跳过压缩",
-                                systemImage: "arrow.down.right.and.arrow.up.left"
-                            )
-                            .foregroundStyle(.orange)
-                        }
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                    HStack(spacing: 16) {
-                        Text("压缩前：\(TinyPNGFormat.bytes(model.totalOriginalByteCount))")
-                        if let stats = model.compressionStats {
-                            Text("压缩后：\(TinyPNGFormat.bytes(stats.afterBytes))")
-                            Text("减少：\(TinyPNGFormat.percent(stats.savedPercentage))")
-                                .foregroundStyle(.green)
-                        } else if model.isRunning {
-                            Text("压缩后：计算中")
-                        }
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-            }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-        }
-    }
-}
-
-private struct TinyPNGTaskRow: View {
-    let item: TinyPNGImageItem
-    let onRevealSource: () -> Void
-    @State private var isPreviewPresented = false
-
-    var body: some View {
-        ImageCompressionTaskRow(
-            thumbnailURL: item.id,
-            title: item.relativePath,
-            sizeSummary: sizeSummary,
-            elapsedText: CompressionElapsedFormatter.seconds(item.elapsedSeconds),
-            destinationPath: item.destinationPath,
-            state: .label(item.status.title, item.status.color),
-            showsPreviewButton: item.status == .success,
-            onPreview: { isPreviewPresented = true },
-            onRevealSource: onRevealSource,
-            onRevealDestination: { url in
-                NSWorkspace.shared.activateFileViewerSelecting([url])
-            }
-        )
-        .sheet(isPresented: $isPreviewPresented) {
-            TinyPNGImagePreview(imageURL: item.id)
-        }
-    }
-
-    private var sizeSummary: String? {
-        if let compressedByteCount = item.compressedByteCount,
-           let compressionPercentage = item.compressionPercentage {
-            return "原图：\(TinyPNGFormat.bytes(item.byteCount))  压缩后：\(TinyPNGFormat.bytes(compressedByteCount))  减少：\(TinyPNGFormat.percent(compressionPercentage))"
-        }
-        return "原图：\(TinyPNGFormat.bytes(item.byteCount))"
-    }
-}
-
-private struct TinyPNGImagePreview: View {
-    @Environment(\.dismiss) private var dismiss
-
-    let imageURL: URL
-
-    var body: some View {
-        VStack(spacing: 16) {
-            HStack {
-                Text(imageURL.lastPathComponent)
-                    .font(.headline)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer()
-                Button("完成") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-            }
-
-            if let image = NSImage(contentsOf: imageURL) {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ContentUnavailableView(
-                    "无法读取图片",
-                    systemImage: "photo.slash",
-                    description: Text(imageURL.path)
-                )
-            }
-        }
-        .padding(24)
-        .frame(minWidth: 720, minHeight: 560)
     }
 }
 
@@ -343,116 +136,32 @@ struct TinyPNGSelectionSummary: Equatable, Sendable {
     }
 }
 
-enum TinyPNGImageUploadStatus: Equatable {
-    case waiting
-    case uploading
-    case success
-    case skipped
-    case cancelled
-    case failed(String)
-
-    var title: String {
-        switch self {
-        case .waiting:
-            "等待上传"
-        case .uploading:
-            "上传中"
-        case .success:
-            "已完成"
-        case .skipped:
-            "已跳过"
-        case .cancelled:
-            "已停止"
-        case .failed:
-            "失败"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .waiting:
-            "clock"
-        case .uploading:
-            "arrow.triangle.2.circlepath"
-        case .success:
-            "checkmark.circle"
-        case .skipped:
-            "exclamationmark.triangle"
-        case .cancelled:
-            "stop.circle"
-        case .failed:
-            "xmark.circle"
-        }
-    }
-
-    var color: Color {
-        switch self {
-        case .waiting:
-            .secondary
-        case .uploading:
-            .accentColor
-        case .success:
-            .green
-        case .skipped:
-            .orange
-        case .cancelled:
-            .secondary
-        case .failed:
-            .red
-        }
-    }
-}
-
 struct TinyPNGImageItem: Identifiable, Equatable {
     let id: URL
     let relativePath: String
     let byteCount: Int64
-    var status: TinyPNGImageUploadStatus
+    var status: ImageCompressionTaskStatus
     var compressedByteCount: Int64? = nil
     var compressionPercentage: Double? = nil
     var elapsedSeconds: Double? = nil
     var destinationPath: String? = nil
 }
 
-struct TinyPNGCompressionStats: Equatable {
-    let beforeBytes: Int64
-    let afterBytes: Int64
-
-    var savedPercentage: Double {
-        guard beforeBytes > 0 else { return 0 }
-        return Double(beforeBytes - afterBytes) / Double(beforeBytes) * 100
-    }
+extension TinyPNGImageItem: ImageCompressionTaskItem {
+    var resultByteCount: Int64? { compressedByteCount }
+    var resultPercentage: Double? { compressionPercentage }
 }
 
-enum TinyPNGFormat {
-    static func bytes(_ value: Int64) -> String {
-        if value < 1024 {
-            return "\(value) B"
-        }
-        if value < 1024 * 1024 {
-            return String(format: "%.1f KB", Double(value) / 1024)
-        }
-        return String(format: "%.2f MB", Double(value) / (1024 * 1024))
-    }
+typealias TinyPNGScannedImage = ImageScannedImage
+typealias TinyPNGScanResult = ImageScanResult
 
-    static func percent(_ value: Double) -> String {
-        String(format: "%.1f%%", value)
-    }
-}
+extension ImageScanResult {
+    /// TinyPNG 专用汇总：超过上传上限计入 oversized，低于最小压缩大小计入 belowMinimum。
+    nonisolated var summary: TinyPNGSelectionSummary { summary() }
 
-struct TinyPNGScannedImage: Sendable {
-    let url: URL
-    let byteCount: Int64
-}
-
-struct TinyPNGScanResult: Sendable {
-    let images: [TinyPNGScannedImage]
-
-    nonisolated var summary: TinyPNGSelectionSummary {
-        summary()
-    }
-
-    nonisolated func summary(minimumCompressionBytes: Int64 = TinyPNGInputScanner.defaultMinimumCompressionBytes) -> TinyPNGSelectionSummary {
+    nonisolated func summary(
+        minimumCompressionBytes: Int64 = TinyPNGInputScanner.defaultMinimumCompressionBytes
+    ) -> TinyPNGSelectionSummary {
         TinyPNGSelectionSummary(
             imageCount: images.count,
             oversizedCount: images.reduce(into: 0) { count, image in
@@ -470,79 +179,25 @@ struct TinyPNGScanResult: Sendable {
 }
 
 enum TinyPNGInputScanner {
+    /// TinyPNG 服务端限制单张 5 MB，超限跳过上传
     nonisolated static let maxUploadBytes: Int64 = 5 * 1024 * 1024
     nonisolated static let defaultMinimumCompressionBytes: Int64 = 100 * 1024
     nonisolated static let supportedExtensions: Set<String> = ["png", "jpg", "jpeg", "webp"]
 
     nonisolated static func accepts(_ url: URL) -> Bool {
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
-            return false
-        }
-        return isDirectory.boolValue || isSupportedImage(url)
+        ImageTaskScanner.accepts(url, supportedExtensions: supportedExtensions)
     }
 
     nonisolated static func isDirectory(_ url: URL) -> Bool {
-        var directory = ObjCBool(false)
-        _ = FileManager.default.fileExists(atPath: url.path, isDirectory: &directory)
-        return directory.boolValue
+        ImageTaskScanner.isDirectory(url)
     }
 
-    nonisolated static func scan(_ url: URL) -> TinyPNGScanResult {
-        if !isDirectory(url) {
-            guard isSupportedImage(url),
-                  let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
-                  let fileSize = values.fileSize else {
-                return TinyPNGScanResult(images: [])
-            }
-            return TinyPNGScanResult(images: [
-                TinyPNGScannedImage(url: url, byteCount: Int64(fileSize))
-            ])
-        }
-
-        guard let enumerator = FileManager.default.enumerator(
-            at: url,
-            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
-            options: []
-        ) else {
-            return TinyPNGScanResult(images: [])
-        }
-
-        var images: [TinyPNGScannedImage] = []
-        for item in enumerator {
-            if Task.isCancelled {
-                break
-            }
-            guard let imageURL = item as? URL,
-                  isSupportedImage(imageURL),
-                  let values = try? imageURL.resourceValues(
-                    forKeys: [.isRegularFileKey, .fileSizeKey]
-                  ),
-                  values.isRegularFile == true,
-                  let fileSize = values.fileSize else {
-                continue
-            }
-            images.append(
-                TinyPNGScannedImage(url: imageURL, byteCount: Int64(fileSize))
-            )
-        }
-
-        images.sort {
-            $0.url.path.localizedStandardCompare($1.url.path) == .orderedAscending
-        }
-        return TinyPNGScanResult(images: images)
+    nonisolated static func scan(_ url: URL) -> ImageScanResult {
+        ImageTaskScanner.scan(url, supportedExtensions: supportedExtensions)
     }
 
     nonisolated static func summary(for url: URL) -> TinyPNGSelectionSummary {
         scan(url).summary()
-    }
-
-    nonisolated static func imageURLs(at url: URL) -> [URL] {
-        scan(url).images.map(\.url)
-    }
-
-    nonisolated private static func isSupportedImage(_ url: URL) -> Bool {
-        supportedExtensions.contains(url.pathExtension.lowercased())
     }
 }
 
@@ -612,7 +267,7 @@ final class TinyPNGModel {
             switch item.status {
             case .success, .skipped:
                 count += 1
-            case .waiting, .uploading, .cancelled, .failed:
+            case .waiting, .working, .cancelled, .failed:
                 break
             }
         }
@@ -631,12 +286,12 @@ final class TinyPNGModel {
         imageItems.reduce(0) { $0 + $1.byteCount }
     }
 
-    var compressionStats: TinyPNGCompressionStats? {
+    var compressionStats: ImageCompressionSizeStats? {
         guard !imageItems.isEmpty,
               imageItems.allSatisfy({ $0.compressedByteCount != nil }) else {
             return nil
         }
-        return TinyPNGCompressionStats(
+        return ImageCompressionSizeStats(
             beforeBytes: totalOriginalByteCount,
             afterBytes: imageItems.reduce(0) { $0 + ($1.compressedByteCount ?? 0) }
         )
@@ -755,7 +410,7 @@ final class TinyPNGModel {
         imageItems = imageItems.map { item in
             guard case .waiting = item.status else { return item }
             var updated = item
-            updated.status = .uploading
+            updated.status = .working
             return updated
         }
         output = ""
@@ -816,7 +471,7 @@ final class TinyPNGModel {
                 if result.terminationStatus == 0 {
                     finalizeSkippedItems()
                     imageItems = imageItems.map { item in
-                        guard case .uploading = item.status else { return item }
+                        guard case .working = item.status else { return item }
                         var updated = item
                         updated.status = .success
                         return updated
@@ -831,7 +486,7 @@ final class TinyPNGModel {
                     operationStatusSystemImage = "checkmark.circle"
                 } else {
                     imageItems = imageItems.map { item in
-                        guard case .uploading = item.status else { return item }
+                        guard case .working = item.status else { return item }
                         var updated = item
                         updated.status = .failed("脚本退出码 \(result.terminationStatus)")
                         return updated
@@ -852,7 +507,7 @@ final class TinyPNGModel {
                     return
                 }
                 imageItems = imageItems.map { item in
-                    guard case .uploading = item.status else { return item }
+                    guard case .working = item.status else { return item }
                     var updated = item
                     updated.status = .failed(error.localizedDescription)
                     return updated
@@ -881,7 +536,7 @@ final class TinyPNGModel {
         operationStatus = "正在停止"
         operationStatusSystemImage = "stop.circle"
         imageItems = imageItems.map { item in
-            guard case .uploading = item.status else { return item }
+            guard case .working = item.status else { return item }
             var updated = item
             updated.status = .cancelled
             return updated
@@ -904,15 +559,6 @@ final class TinyPNGModel {
         operationStatus = "请选择图片或文件夹"
         operationStatusSystemImage = "photo.on.rectangle"
         alertMessage = nil
-    }
-
-    func revealOutputDirectory() {
-        guard let outputDirectoryURL else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([outputDirectoryURL])
-    }
-
-    func revealSource(for item: TinyPNGImageItem) {
-        NSWorkspace.shared.activateFileViewerSelecting([item.id])
     }
 
     func showError(_ message: String) {
@@ -1007,7 +653,7 @@ final class TinyPNGModel {
             switch item.status {
             case .waiting, .skipped:
                 break
-            case .success, .uploading, .cancelled, .failed:
+            case .success, .working, .cancelled, .failed:
                 return item
             }
             var updated = item
@@ -1048,7 +694,7 @@ final class TinyPNGModel {
         let value = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard value.hasPrefix("EVENT "),
               let data = value.dropFirst("EVENT ".count).data(using: .utf8),
-              let event = try? JSONDecoder().decode(TinyPNGProcessEvent.self, from: data) else {
+              let event = try? JSONDecoder().decode(ImageCompressionProcessEvent.self, from: data) else {
             return
         }
 
@@ -1065,23 +711,13 @@ final class TinyPNGModel {
         item.elapsedSeconds = event.elapsed
         if event.ok {
             item.compressedByteCount = event.after
-            item.compressionPercentage = TinyPNGCompressionStats(
+            item.compressionPercentage = ImageCompressionSizeStats(
                 beforeBytes: event.before,
                 afterBytes: event.after
             ).savedPercentage
         }
         imageItems[index] = item
     }
-}
-
-private struct TinyPNGProcessEvent: Decodable {
-    let src: String
-    let dst: String?
-    let ok: Bool
-    let before: Int64
-    let after: Int64
-    let elapsed: Double?
-    let error: String
 }
 
 #Preview {
