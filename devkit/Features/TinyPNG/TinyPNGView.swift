@@ -16,7 +16,7 @@ struct TinyPNGView: View {
             title: "TinyPNG 图片压缩",
             subtitle: "默认输出到 ~/Desktop/DevKitOutput 时间戳文件夹；开启后压缩成功替换原图",
             replaceHelp: "开启后压缩成功的图片会替换原文件；关闭后生成输出时间戳文件夹",
-            dropSubtitle: "PNG、JPG、JPEG、WebP",
+            dropSubtitle: "PNG、JPG、JPEG、WebP，单张最大 \(TinyPNGInputScanner.maxUploadBytes / 1024 / 1024)MB",
             stopLabel: "停止压缩",
             minimumCompressionSizeKB: $model.minimumCompressionSizeKB,
             replaceOriginals: $model.replaceOriginals,
@@ -420,7 +420,7 @@ final class TinyPNGModel {
         alertMessage = nil
         let shouldReplaceOriginals = replaceOriginals
         let minimumCompressionSizeKB = minimumCompressionSizeKB
-        // 非替换模式统一输出到 ~/Desktop/DevKit/<功能名>_<时间戳>/
+        // 非替换模式统一输出到 ~/Desktop/DevKitOutput/<功能名>_<时间戳>/
         let unifiedOutputBase = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Desktop/DevKitOutput", isDirectory: true)
 

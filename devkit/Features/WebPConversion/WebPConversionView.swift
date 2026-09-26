@@ -429,7 +429,7 @@ final class WebPConversionModel {
         let selectedQuality = quality
         let minimumCompressionSizeKB = minimumCompressionSizeKB
         let maximumSideLength = maximumSideLength
-        // 非替换模式统一输出到 ~/Desktop/DevKit/<功能名>_<时间戳>/
+        // 非替换模式统一输出到 ~/Desktop/DevKitOutput/<功能名>_<时间戳>/
         let unifiedOutputBase = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Desktop/DevKitOutput", isDirectory: true)
 

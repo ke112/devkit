@@ -205,7 +205,7 @@ final class LubanCompressionModel {
             outputDir = nil
             outputDirectoryURL = nil
         } else {
-            // 非替换模式统一输出到 ~/Desktop/DevKit/<功能名>_<时间戳>/
+            // 非替换模式统一输出到 ~/Desktop/DevKitOutput/<功能名>_<时间戳>/
             outputDir = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent("Desktop/DevKitOutput", isDirectory: true)
                 .appendingPathComponent("Luban_\(timestamp)", isDirectory: true)

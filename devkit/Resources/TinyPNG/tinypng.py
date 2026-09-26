@@ -2,7 +2,7 @@
 """
 TinyPNG 批量压缩工具
 用法: python3 tinypng.py <文件或目录路径...>
-输出: 非替换模式默认写入输入同级时间戳文件夹；DevKit 传入 --output-dir 时统一写入该目录下 TinyPNG_<时间戳>
+输出: 非替换模式默认写入输入同级时间戳文件夹；DevKit 传入 --output-dir 时统一写入该目录下 TinyPNG_<时间戳>；单文件输入平铺，文件夹输入保持目录结构
 失败的图片会记录到 JSON 文件并自动重试直到全部成功
 
 大概比例:
@@ -477,9 +477,11 @@ def main():
         if replace_originals:
             return
         relative = relative_to_root(root, image)
-        unchanged_dst = (output_dir / relative) if len(input_roots) == 1 else (
-            output_dir / root_names[root] / relative
-        )
+        # 单文件根平铺到输出目录（与 Luban 一致），文件夹根按根名分组避免多根重名
+        if len(input_roots) == 1 or root.is_file():
+            unchanged_dst = output_dir / relative
+        else:
+            unchanged_dst = output_dir / root_names[root] / relative
         unchanged_dst.parent.mkdir(parents=True, exist_ok=True)
         if not unchanged_dst.exists():
             shutil.copy2(image, unchanged_dst)
@@ -502,7 +504,8 @@ def main():
             dst = img
         else:
             relative = relative_to_root(root, img)
-            dst = (output_dir / relative) if len(input_roots) == 1 else (
+            # 单文件根平铺到输出目录（与 Luban 一致），文件夹根按根名分组避免多根重名
+            dst = output_dir / relative if (len(input_roots) == 1 or root.is_file()) else (
                 output_dir / root_names[root] / relative
             )
         tasks.append((img, dst))

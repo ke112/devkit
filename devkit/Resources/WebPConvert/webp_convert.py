@@ -292,7 +292,7 @@ def main():
     root_of = {image: root for root, images in root_images for image in images}
 
     # 输出目录：替换模式就地写入；单根目录写入同级时间戳文件夹；
-    # 多根目录统一写入 <首个根的同级>/WebP_<时间戳>/，按根名分组保持结构。
+    # 多根目录统一写入 <首个根的同级>/WebP_<时间戳>/，文件夹按根名分组保持结构，单个文件平铺。
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     unified_base = Path(args.output_dir).expanduser() if args.output_dir else None
     if args.replace:
@@ -318,21 +318,20 @@ def main():
         if args.replace:
             return image.with_suffix(".webp")
         relative = relative_to_root(root, image).with_suffix(".webp")
-        if len(input_roots) == 1:
+        # 单文件根平铺到输出目录（与 Luban 一致），文件夹根按根名分组避免多根重名
+        if len(input_roots) == 1 or root.is_file():
             return output_dir / relative
-        group = root.stem if root.is_file() else root.name
-        return output_dir / group / relative
+        return output_dir / root.name / relative
 
     def copy_unchanged(root: Path, image: Path):
         """文件夹输出模式下，把未转换的原图按结构复制到输出目录"""
         if args.replace or (len(input_roots) == 1 and root.is_file()):
             return
         relative = relative_to_root(root, image)
-        if len(input_roots) == 1:
+        if root.is_file():
             unchanged_dst = output_dir / relative
         else:
-            group = root.stem if root.is_file() else root.name
-            unchanged_dst = output_dir / group / relative
+            unchanged_dst = output_dir / root.name / relative
         unchanged_dst.parent.mkdir(parents=True, exist_ok=True)
         if not unchanged_dst.exists():
             shutil.copy2(image, unchanged_dst)
