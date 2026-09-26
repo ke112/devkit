@@ -836,6 +836,67 @@ struct DevKitTests {
         #expect(stats?.savedPercentage == 45)
     }
 
+    @Test func imageThumbnailDownsamplesToMaxPixelSize() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "DevKitTests-Thumbnail-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let fileURL = directory.appending(path: "large.jpg")
+        let bitmap = makeImage(width: 2_000, height: 1_000, color: .red).representations[0] as! NSBitmapImageRep
+        let data = try #require(bitmap.representation(using: .jpeg, properties: [:]))
+        try data.write(to: fileURL)
+
+        let thumbnail = try #require(ImageThumbnailLoader.downsampledImage(at: fileURL, maxPixelSize: 132))
+
+        #expect(max(thumbnail.width, thumbnail.height) == 132)
+        #expect(
+            abs(Double(thumbnail.width) / Double(thumbnail.height) - 2) < 0.02,
+            "缩略图应保持 2:1 原始宽高比"
+        )
+    }
+
+    @Test func imageThumbnailLoaderCachesThumbnailsForTheSameFile() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "DevKitTests-Thumbnail-Cache-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let fileURL = directory.appending(path: "photo.png")
+        let bitmap = makeImage(width: 400, height: 200, color: .blue).representations[0] as! NSBitmapImageRep
+        let data = try #require(bitmap.representation(using: .png, properties: [:]))
+        try data.write(to: fileURL)
+
+        let first = try #require(await ImageThumbnailLoader.thumbnail(at: fileURL, maxPixelSize: 44))
+        let second = try #require(await ImageThumbnailLoader.thumbnail(at: fileURL, maxPixelSize: 44))
+
+        #expect(max(first.width, first.height) == 44)
+        #expect(first === second, "同一文件的重复加载应命中缓存")
+    }
+
+    @Test func imageThumbnailLoaderReloadsAfterFileIsOverwritten() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "DevKitTests-Thumbnail-Overwrite-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let fileURL = directory.appending(path: "photo.png")
+        func writePNG(width: Int, height: Int) throws {
+            let bitmap = makeImage(width: width, height: height, color: .green).representations[0] as! NSBitmapImageRep
+            let data = try #require(bitmap.representation(using: .png, properties: [:]))
+            try data.write(to: fileURL)
+        }
+
+        try writePNG(width: 200, height: 100)
+        let first = try #require(await ImageThumbnailLoader.thumbnail(at: fileURL, maxPixelSize: 132))
+        #expect(first.width == 132)
+
+        try writePNG(width: 100, height: 200)
+        let second = try #require(await ImageThumbnailLoader.thumbnail(at: fileURL, maxPixelSize: 132))
+
+        #expect(second.width == 66, "文件被覆盖后缩略图缓存应失效并重新解码")
+    }
+
     @Test func webPScannerCollectsSupportedImagesAndTagsWebPSources() throws {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: "DevKitTests-WebP-\(UUID().uuidString)", directoryHint: .isDirectory)

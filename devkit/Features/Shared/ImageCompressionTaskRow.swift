@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 /// 三个图片压缩/转换功能页共用的任务行样式：缩略图 + 名称 + 大小/耗时 + 输出路径 + 状态 + 操作按钮。
@@ -108,17 +107,7 @@ struct ImageCompressionTaskRow: View {
     }
 
     @ViewBuilder private var thumbnailView: some View {
-        if let thumbnailURL, let image = NSImage(contentsOf: thumbnailURL) {
-            Image(nsImage: image)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-        } else {
-            Image(systemName: "photo")
-                .font(.title2)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(nsColor: .controlBackgroundColor))
-        }
+        ImageThumbnailView(url: thumbnailURL)
     }
 }
 

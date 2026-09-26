@@ -83,6 +83,14 @@ struct ImageCompressionPreviewSheet: View {
 
     let imageURL: URL
 
+    @State private var loadState = PreviewLoadState.loading
+
+    private enum PreviewLoadState {
+        case loading
+        case loaded(CGImage)
+        case failed
+    }
+
     var body: some View {
         VStack(spacing: 16) {
             HStack {
@@ -95,12 +103,16 @@ struct ImageCompressionPreviewSheet: View {
                     .keyboardShortcut(.cancelAction)
             }
 
-            if let image = NSImage(contentsOf: imageURL) {
-                Image(nsImage: image)
+            switch loadState {
+            case .loading:
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .loaded(let image):
+                Image(image, scale: 1, orientation: .up, label: Text(imageURL.lastPathComponent))
                     .resizable()
                     .scaledToFit()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
+            case .failed:
                 ContentUnavailableView(
                     "无法读取图片",
                     systemImage: "photo.slash",
@@ -110,6 +122,13 @@ struct ImageCompressionPreviewSheet: View {
         }
         .padding(24)
         .frame(minWidth: 720, minHeight: 560)
+        .task(id: imageURL) {
+            let image = await ImageThumbnailLoader.thumbnail(
+                at: imageURL,
+                maxPixelSize: ImageThumbnailLoader.previewMaxPixelSize
+            )
+            loadState = image.map(PreviewLoadState.loaded) ?? .failed
+        }
     }
 }
 
