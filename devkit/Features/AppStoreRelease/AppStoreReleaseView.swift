@@ -116,6 +116,25 @@ struct AppStoreReleaseView: View {
                 initialVersionString: versionManagerInitialVersion
             )
         }
+        .sheet(
+            isPresented: Binding(
+                get: { !model.appInfoMatches.isEmpty },
+                set: {
+                    if !$0 {
+                        model.appInfoMatches = []
+                        model.appInfoCacheHint = nil
+                    }
+                }
+            )
+        ) {
+            AppStoreAppPickerView(
+                apps: model.appInfoMatches,
+                isRefreshing: model.appInfoFetchStage != .idle,
+                cacheHint: model.appInfoCacheHint
+            ) { app in
+                model.applyAppInfo(app)
+            }
+        }
         .onChange(of: model.versionCreationRequest) { _, newValue in
             guard let newValue else { return }
             versionManagerInitialVersion = newValue
@@ -152,7 +171,9 @@ struct AppStoreReleaseView: View {
                     ),
                     configURL: model.configURL,
                     isImportLocaleMapValid: $isImportLocaleMapValid,
-                    isScreenshotDirectoryMapValid: $isScreenshotDirectoryMapValid
+                    isScreenshotDirectoryMapValid: $isScreenshotDirectoryMapValid,
+                    isFetchingAppInfo: model.isAppInfoFetchBlocking,
+                    onFetchAppInfo: { model.fetchAppInfo() }
                 )
                 .id(model.configurationRevision)
                 .disabled(model.isRunning || model.isVersionRequestRunning)
@@ -310,6 +331,8 @@ private struct AppStoreReleaseConfigurationForm: View {
     let configURL: URL
     @Binding var isImportLocaleMapValid: Bool
     @Binding var isScreenshotDirectoryMapValid: Bool
+    let isFetchingAppInfo: Bool
+    let onFetchAppInfo: () -> Void
 
     var body: some View {
         Form {
@@ -321,6 +344,21 @@ private struct AppStoreReleaseConfigurationForm: View {
                     path: $configuration.auth.privateKeyPath,
                     selection: .file
                 )
+                HStack(spacing: 8) {
+                    Button {
+                        onFetchAppInfo()
+                    } label: {
+                        Label("自动填充 App 信息", systemImage: "wand.and.stars")
+                    }
+                    .disabled(!hasAuthenticationValues || isFetchingAppInfo)
+                    if isFetchingAppInfo {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
+                Text("使用上方认证信息读取可访问的 App，自动填充下方 App ID、Bundle ID、默认名称；匹配到多个 App 时可选择。结果本地缓存，之后秒开；首次读取约需十几秒。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("App") {
@@ -402,6 +440,15 @@ private struct AppStoreReleaseConfigurationForm: View {
         }
         .formStyle(.grouped)
         .textFieldStyle(.roundedBorder)
+    }
+
+    private var hasAuthenticationValues: Bool {
+        [
+            configuration.auth.issuerID,
+            configuration.auth.keyID,
+            configuration.auth.privateKeyPath,
+        ]
+        .allSatisfy { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
     private var materialDirectory: Binding<String> {
@@ -755,6 +802,69 @@ private struct AppStoreVersionManagerView: View {
     }
 }
 
+private struct AppStoreAppPickerView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let apps: [AppStoreAppSummary]
+    let isRefreshing: Bool
+    let cacheHint: String?
+    let onPick: (AppStoreAppSummary) -> Void
+    @State private var selection: AppStoreAppSummary.ID?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("选择要填充的 App")
+                        .font(.title2.bold())
+                    HStack(spacing: 6) {
+                        if isRefreshing {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text(cacheHint ?? "当前 API Key 可访问多个 App，选择一个填充到配置中。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Button("取消") {
+                    dismiss()
+                }
+                Button("填充所选") {
+                    if let app = apps.first(where: { $0.id == selection }) {
+                        onPick(app)
+                    }
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(selection == nil)
+            }
+            .padding(20)
+
+            Divider()
+
+            Table(apps, selection: $selection) {
+                TableColumn("默认名称") { app in
+                    Text(app.name.isEmpty ? "未知" : app.name)
+                }
+                TableColumn("App ID") { app in
+                    Text(app.id)
+                }
+                TableColumn("Bundle ID") { app in
+                    Text(app.bundleID.isEmpty ? "未知" : app.bundleID)
+                }
+                TableColumn("可编辑版本") { app in
+                    Text(app.suggestedVersion ?? "")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(minHeight: 300)
+        }
+        .frame(minWidth: 720, minHeight: 460)
+    }
+}
+
 private struct NewAppStoreVersionView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var versionString: String
@@ -820,6 +930,14 @@ private struct NewAppStoreVersionView: View {
 @MainActor
 @Observable
 private final class AppStoreReleaseModel {
+    enum AppInfoFetchStage: Equatable {
+        case idle
+        /// 快速拉取 App 列表（跳过版本查询），首次无缓存时使用。
+        case fast
+        /// 完整刷新（含每个 App 的建议版本），后台进行，不阻塞点击。
+        case full
+    }
+
     enum SaveStatus {
         case saved
         case saving
@@ -870,6 +988,13 @@ private final class AppStoreReleaseModel {
     var isVersionRequestRunning = false
     var versionRequestStatus = "尚未读取 App Store Connect 版本"
     var versionCreationRequest: String?
+    var appInfoFetchStage: AppInfoFetchStage = .idle
+    var appInfoMatches: [AppStoreAppSummary] = []
+    var appInfoCacheHint: String?
+    private var appInfoRoundDidPresent = false
+
+    /// fast 阶段没有可展示的缓存，点击无效，需要禁用按钮；full 阶段允许随时点击重放缓存。
+    var isAppInfoFetchBlocking: Bool { appInfoFetchStage == .fast }
 
     init(storageDirectoryURL: URL? = nil) {
         let resolvedStorageDirectory = storageDirectoryURL
@@ -916,6 +1041,182 @@ private final class AppStoreReleaseModel {
 
     func createVersion(_ versionString: String) {
         runVersionRequest(command: "create", versionString: versionString)
+    }
+
+    func fetchAppInfo() {
+        guard !isRunning, !isVersionRequestRunning, let configuration else { return }
+        guard saveConfiguration() else { return }
+        guard AppStoreReleaseConfigurationFile.scriptURL(named: "app_store_versions") != nil else {
+            alertMessage = "App 内缺少脚本：app_store_versions.py"
+            return
+        }
+
+        let authKey = AppStoreAppsCache.authKey(for: configuration)
+        let cache = loadAppInfoCache(matching: authKey)
+
+        if appInfoFetchStage != .idle {
+            // 已有刷新在后台进行：直接重放缓存，不打断、不重复起进程。
+            if let cache, !cache.apps.isEmpty {
+                presentAppInfo(cache.apps, cacheFetchedAt: cache.fetchedAt)
+            } else {
+                operationStatus = "正在后台读取 App 信息，请稍候…"
+                operationStatusSystemImage = "terminal"
+            }
+            return
+        }
+
+        appInfoRoundDidPresent = false
+        appInfoMatches = []
+        appInfoCacheHint = nil
+
+        if let cache, !cache.apps.isEmpty {
+            presentAppInfo(cache.apps, cacheFetchedAt: cache.fetchedAt)
+            runAppInfoScript(stage: .full, authKey: authKey)
+        } else {
+            // 首次没有缓存：先快速拉取 App 列表让选择器尽快出现，版本信息由后续完整刷新补齐。
+            runAppInfoScript(stage: .fast, authKey: authKey)
+        }
+    }
+
+    func applyAppInfo(_ app: AppStoreAppSummary) {
+        guard let configuration else { return }
+        updateConfiguration(app.applied(to: configuration))
+    }
+
+    /// 展示结果：单个 App 直接填充，多个 App 弹出选择器。
+    /// 本轮已向用户展示过结果，后续后台刷新失败时只更新状态，不再弹窗打断。
+    private func presentAppInfo(_ apps: [AppStoreAppSummary], cacheFetchedAt: Date? = nil) {
+        appInfoRoundDidPresent = true
+        if apps.count == 1 {
+            applyAppInfo(apps[0])
+            operationStatus = cacheFetchedAt == nil ? "已自动填充 App 信息" : "已按缓存自动填充 App 信息"
+            operationStatusSystemImage = "checkmark.circle"
+            return
+        }
+        appInfoMatches = apps
+        if let cacheFetchedAt {
+            appInfoCacheHint = "当前展示 \(cacheFetchedAt.formatted(.relative(presentation: .named)))的缓存，后台刷新后将自动更新。"
+        }
+        operationStatus = "该 Key 可访问 \(apps.count) 个 App，请选择要填充的 App"
+        operationStatusSystemImage = "checkmark.circle"
+    }
+
+    private func runAppInfoScript(stage: AppInfoFetchStage, authKey: String) {
+        guard let scriptURL = AppStoreReleaseConfigurationFile.scriptURL(named: "app_store_versions") else {
+            appInfoFetchStage = .idle
+            alertMessage = "App 内缺少脚本：app_store_versions.py"
+            return
+        }
+        appInfoFetchStage = stage
+        output = ""
+        if !appInfoRoundDidPresent {
+            operationStatus = stage == .fast ? "正在读取 App Store Connect App 列表" : "正在后台刷新 App 信息"
+            operationStatusSystemImage = "terminal"
+        }
+        let outputURL = storageDirectoryURL.appending(path: "app_store_apps-\(UUID().uuidString).json")
+        var arguments = [
+            "-l",
+            "-c",
+            "exec python3 -B -u \"$@\"",
+            "devkit",
+            scriptURL.path,
+            "--config",
+            configURL.path,
+            "--output",
+            outputURL.path,
+            "apps",
+        ]
+        if stage == .fast {
+            arguments += ["--skip-versions"]
+        }
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await StreamingProcess.run(
+                    executableURL: URL(fileURLWithPath: "/bin/zsh"),
+                    arguments: arguments,
+                    currentDirectoryURL: storageDirectoryURL
+                ) { chunk in
+                    Task { @MainActor [weak self] in
+                        self?.output.append(chunk)
+                    }
+                }
+                let status = result.terminationStatus
+                defer { try? FileManager.default.removeItem(at: outputURL) }
+                guard status == 0 else {
+                    handleAppInfoFetchFailure(
+                        stage: stage,
+                        message: AppStoreVersion.errorMessage(in: output)
+                            ?? "读取 App Store Connect App 信息失败。"
+                    )
+                    return
+                }
+                let response = try JSONDecoder().decode(
+                    AppStoreAppsResponse.self,
+                    from: Data(contentsOf: outputURL)
+                )
+                saveAppInfoCache(response.apps, authKey: authKey)
+                appInfoFetchStage = .idle
+                if response.apps.isEmpty {
+                    operationStatus = "未读取到可访问的 App"
+                    operationStatusSystemImage = "xmark.circle"
+                    alertMessage = "该 API Key 没有可访问的 App，请确认 Key 所属账号与权限。"
+                } else if stage == .fast {
+                    presentAppInfo(response.apps)
+                    runAppInfoScript(stage: .full, authKey: authKey)
+                } else if !appInfoMatches.isEmpty {
+                    appInfoMatches = response.apps
+                    appInfoCacheHint = nil
+                    operationStatus = "App 信息已刷新，请选择要填充的 App"
+                    operationStatusSystemImage = "checkmark.circle"
+                } else if appInfoRoundDidPresent {
+                    operationStatus = "App 信息已刷新，缓存已更新（共 \(response.apps.count) 个 App）。"
+                    operationStatusSystemImage = "checkmark.circle"
+                } else {
+                    presentAppInfo(response.apps)
+                }
+            } catch {
+                handleAppInfoFetchFailure(stage: stage, message: error.localizedDescription)
+            }
+        }
+    }
+
+    private func handleAppInfoFetchFailure(stage: AppInfoFetchStage, message: String) {
+        appInfoFetchStage = .idle
+        guard !appInfoRoundDidPresent else {
+            operationStatus = "App 信息刷新失败，当前展示的结果保持不变。"
+            operationStatusSystemImage = "xmark.circle"
+            return
+        }
+        operationStatus = stage == .fast ? "读取 App 信息失败" : "App 信息刷新失败"
+        operationStatusSystemImage = "xmark.circle"
+        alertMessage = message
+    }
+
+    private var appInfoCacheURL: URL {
+        storageDirectoryURL.appending(path: "app_store_apps_cache.json")
+    }
+
+    private func loadAppInfoCache(matching authKey: String) -> AppStoreAppsCache? {
+        guard let data = try? Data(contentsOf: appInfoCacheURL) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let cache = try? decoder.decode(AppStoreAppsCache.self, from: data),
+              cache.authKey == authKey else {
+            return nil
+        }
+        return cache
+    }
+
+    private func saveAppInfoCache(_ apps: [AppStoreAppSummary], authKey: String) {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(
+            AppStoreAppsCache(authKey: authKey, apps: apps, fetchedAt: Date())
+        ) else { return }
+        try? data.write(to: appInfoCacheURL, options: .atomic)
     }
 
     func updateConfiguration(_ newValue: AppStoreReleaseConfiguration) {

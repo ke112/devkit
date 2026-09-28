@@ -1339,6 +1339,120 @@ struct DevKitTests {
         #expect(version.releaseTypeDisplayName == "审核通过后")
     }
 
+    @Test func appStoreAppsDecodeAndFillOnlyEmptyVersion() throws {
+        let data = Data(
+            """
+            {
+              "apps": [
+                {
+                  "id": "6769357630",
+                  "name": "示例 App",
+                  "bundleId": "com.example.app",
+                  "primaryLocale": "zh-Hans",
+                  "suggestedVersion": "2.7.0"
+                }
+              ]
+            }
+            """.utf8
+        )
+
+        let response = try JSONDecoder().decode(AppStoreAppsResponse.self, from: data)
+        let app = try #require(response.apps.first)
+
+        #expect(app.id == "6769357630")
+        #expect(app.bundleID == "com.example.app")
+        #expect(app.primaryLocale == "zh-Hans")
+
+        let emptyConfiguration = AppStoreReleaseConfiguration.empty
+        let filled = app.applied(to: emptyConfiguration)
+        #expect(filled.app.appID == "6769357630")
+        #expect(filled.app.bundleID == "com.example.app")
+        #expect(filled.app.defaultName == "示例 App")
+        #expect(filled.app.versionString == "2.7.0")
+
+        var configured = emptyConfiguration
+        configured.app.versionString = "3.0.0"
+        #expect(app.applied(to: configured).app.versionString == "3.0.0")
+    }
+
+    @Test func appStoreAppSummarySurvivesMissingSuggestedVersion() throws {
+        let data = Data(
+            """
+            {"apps": [{"id": "1", "name": "App", "bundleId": "com.example.app"}]}
+            """.utf8
+        )
+
+        let response = try JSONDecoder().decode(AppStoreAppsResponse.self, from: data)
+        let app = try #require(response.apps.first)
+
+        #expect(app.suggestedVersion == nil)
+        let filled = app.applied(to: .empty)
+        #expect(filled.app.versionString.isEmpty)
+    }
+
+    @Test func appStoreAppsCacheDecodesDiskFormatAndBindsToAuthKey() throws {
+        let data = Data(
+            """
+            {
+              "authKey": "issuer|key|~/AuthKey.p8",
+              "apps": [
+                {
+                  "id": "6769357630",
+                  "name": "GameWave",
+                  "bundleId": "ai.fungen.ios",
+                  "primaryLocale": "en-US",
+                  "suggestedVersion": "2.7.0"
+                }
+              ],
+              "fetchedAt": "2026-09-27T00:00:00Z"
+            }
+            """.utf8
+        )
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let cache = try decoder.decode(AppStoreAppsCache.self, from: data)
+
+        #expect(cache.authKey == "issuer|key|~/AuthKey.p8")
+        #expect(cache.apps.first?.bundleID == "ai.fungen.ios")
+        #expect(cache.fetchedAt != nil)
+
+        var configuration = AppStoreReleaseConfiguration.empty
+        configuration.auth.issuerID = "issuer "
+        configuration.auth.keyID = "key"
+        configuration.auth.privateKeyPath = "~/AuthKey.p8"
+        #expect(AppStoreAppsCache.authKey(for: configuration) == "issuer|key|~/AuthKey.p8")
+        configuration.auth.keyID = "other"
+        #expect(AppStoreAppsCache.authKey(for: configuration) != cache.authKey)
+    }
+
+    @Test func appStoreAppsCacheRoundTripsThroughEncoder() throws {
+        let cache = AppStoreAppsCache(
+            authKey: "issuer|key|~/AuthKey.p8",
+            apps: [
+                AppStoreAppSummary(
+                    id: "1",
+                    name: "App",
+                    bundleID: "com.example.app",
+                    primaryLocale: nil,
+                    suggestedVersion: nil
+                ),
+            ],
+            fetchedAt: Date(timeIntervalSince1970: 1_789_000_000)
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let restored = try decoder.decode(
+            AppStoreAppsCache.self,
+            from: encoder.encode(cache)
+        )
+
+        #expect(restored == cache)
+    }
+
     @Test func appStoreVersionValidationAcceptsAppleNumericVersionFormat() {
         #expect(AppStoreVersion.isValidVersionString("2.1.0"))
         #expect(AppStoreVersion.isValidVersionString("2"))
@@ -1352,6 +1466,22 @@ struct DevKitTests {
         #expect(AppStoreVersion.missingVersion(in: output, expectedVersion: "2.3.0") == "2.3.0")
         #expect(AppStoreVersion.missingVersion(in: output, expectedVersion: "2.2.0") == nil)
         #expect(AppStoreVersion.missingVersion(in: "认证失败", expectedVersion: "2.3.0") == nil)
+    }
+
+    @Test func appStoreScriptErrorExtractsLastErrorMessageFromLog() {
+        let output = """
+        开始并行读取 43 个 App 的版本信息…
+        已读取 38/43 个 App 的版本信息。
+        {"error": "Remote end closed connection without response"}
+        """
+
+        #expect(
+            AppStoreVersion.errorMessage(in: output)
+                == "Remote end closed connection without response"
+        )
+        #expect(AppStoreVersion.errorMessage(in: "普通文本错误") == "普通文本错误")
+        #expect(AppStoreVersion.errorMessage(in: "\n \n") == nil)
+        #expect(AppStoreVersion.errorMessage(in: "") == nil)
     }
 
     @Test func streamingProcessReturnsCompleteOutput() async throws {

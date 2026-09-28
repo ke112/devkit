@@ -65,8 +65,75 @@ struct AppStoreVersion: Codable, Equatable, Identifiable {
         }
         return version
     }
+
+    /// 脚本失败时最后一行是 {"error": "..."}，优先提取其中的信息，否则回退到最后一行日志。
+    static func errorMessage(in output: String) -> String? {
+        let lines = output
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard let lastLine = lines.last else { return nil }
+
+        struct ScriptErrorPayload: Decodable {
+            let error: String
+        }
+        if let data = lastLine.data(using: .utf8),
+           let payload = try? JSONDecoder().decode(ScriptErrorPayload.self, from: data),
+           !payload.error.isEmpty {
+            return payload.error
+        }
+        return lastLine
+    }
 }
 
 struct AppStoreVersionsResponse: Codable, Equatable {
     let versions: [AppStoreVersion]
+}
+
+struct AppStoreAppSummary: Codable, Equatable, Identifiable {
+    let id: String
+    let name: String
+    let bundleID: String
+    let primaryLocale: String?
+    let suggestedVersion: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name
+        case bundleID = "bundleId"
+        case primaryLocale
+        case suggestedVersion
+    }
+
+    /// 填充 App 标识信息；版本号仅在当前为空时填充，避免覆盖用户选择的上传目标。
+    func applied(to configuration: AppStoreReleaseConfiguration) -> AppStoreReleaseConfiguration {
+        var updated = configuration
+        updated.app.appID = id
+        updated.app.bundleID = bundleID
+        updated.app.defaultName = name
+        if updated.app.versionString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            updated.app.versionString = suggestedVersion ?? ""
+        }
+        return updated
+    }
+}
+
+struct AppStoreAppsResponse: Codable, Equatable {
+    let apps: [AppStoreAppSummary]
+}
+
+struct AppStoreAppsCache: Codable, Equatable {
+    var authKey: String = ""
+    var apps: [AppStoreAppSummary] = []
+    var fetchedAt: Date?
+
+    /// 缓存按认证三元组绑定，切换 Key 后旧缓存不生效。
+    static func authKey(for configuration: AppStoreReleaseConfiguration) -> String {
+        [
+            configuration.auth.issuerID,
+            configuration.auth.keyID,
+            configuration.auth.privateKeyPath,
+        ]
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .joined(separator: "|")
+    }
 }
