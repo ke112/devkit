@@ -285,6 +285,30 @@ private struct HomeFeatureSettingsView: View {
             }
         }
         .navigationTitle("首页设置")
+        .toolbar {
+            if #available(macOS 26.0, *) {
+                ToolbarItem(placement: .primaryAction) {
+                    commitHashCopyButton
+                }
+                .sharedBackgroundVisibility(.hidden)
+            } else {
+                ToolbarItem(placement: .primaryAction) {
+                    commitHashCopyButton
+                }
+            }
+        }
+    }
+
+    private var commitHashCopyButton: some View {
+        Button {
+            AppBuildInfo.copyCommitShortHashToPasteboard()
+        } label: {
+            Text(AppBuildInfo.commitShortHash() ?? "unknown")
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .help("当前构建对应的 Git 提交，点击复制")
     }
 }
 
