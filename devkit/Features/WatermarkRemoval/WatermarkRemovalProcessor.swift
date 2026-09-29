@@ -42,7 +42,33 @@ nonisolated enum WatermarkRemovalProcessor {
             throw WatermarkRemovalError.invalidImage
         }
 
-        let observations = try recognizeText(in: sourceImage)
+        let observations = try recognizeText(in: sourceImage, enhancingLightText: false)
+        let originalGroups = makeWatermarkRegionGroups(from: observations, width: sourceImage.width, height: sourceImage.height)
+        do {
+            if !originalGroups.isEmpty {
+                return try repairRepeatedWatermarks(from: image, regionGroups: originalGroups)
+            }
+        } catch WatermarkRemovalError.unsupportedBackground {
+            // Retry the OCR pass with an inverted-contrast recognition image.
+        }
+
+        let enhancedGroups = makeWatermarkRegionGroups(
+            from: try recognizeText(in: sourceImage, enhancingLightText: true),
+            width: sourceImage.width,
+            height: sourceImage.height
+        )
+        guard !enhancedGroups.isEmpty else {
+            if originalGroups.isEmpty { throw WatermarkRemovalError.noWatermarkDetected }
+            throw WatermarkRemovalError.unsupportedBackground
+        }
+        if enhancedGroups.reduce(0, { $0 + $1.count }) < 6,
+           let result = try RepeatedWatermarkRepair.repairDetectedLightRegions(image: image, regionGroups: enhancedGroups) {
+            return result
+        }
+        return try repairRepeatedWatermarks(from: image, regionGroups: enhancedGroups)
+    }
+
+    private static func makeWatermarkRegionGroups(from observations: [TextObservation], width: Int, height: Int) -> [[CGRect]] {
         var numericGroups: [[TextObservation]] = []
         for observation in observations {
             guard let numericToken = observation.numericToken else { continue }
@@ -67,15 +93,11 @@ nonisolated enum WatermarkRemovalProcessor {
             guard distinct.count >= 3,
                   hasWideSpatialSpread(distinct) else { continue }
             regionGroups.append(distinct.map {
-                expandedPixelRect(from: $0.boundingBox, width: sourceImage.width, height: sourceImage.height)
+                expandedPixelRect(from: $0.boundingBox, width: width, height: height)
             })
         }
 
-        guard !regionGroups.isEmpty else {
-            throw WatermarkRemovalError.noWatermarkDetected
-        }
-
-        return try repairRepeatedWatermarks(from: image, regionGroups: regionGroups)
+        return regionGroups
     }
 
     static func normalizedText(_ text: String) -> String {
@@ -96,10 +118,11 @@ nonisolated enum WatermarkRemovalProcessor {
         return zip(lhs, rhs).filter { $0 != $1 }.count <= 1
     }
 
-    private static func recognizeText(in image: CGImage) throws -> [TextObservation] {
+    private static func recognizeText(in image: CGImage, enhancingLightText: Bool) throws -> [TextObservation] {
         var observations: [TextObservation] = []
         let width = image.width
         let height = image.height
+        let rgbaBytes = rgbaBytes(for: image, width: width, height: height)
         let tileCount = 8
         let overlapX = width / 16
         let overlapY = height / 16
@@ -114,13 +137,14 @@ nonisolated enum WatermarkRemovalProcessor {
                     height: min(height, (row + 1) * height / tileCount + overlapY) - max(0, row * height / tileCount - overlapY)
                 )
                 guard let tile = image.cropping(to: tileRect),
-                      let upscaled = upscale(tile, factor: 4) else { continue }
+                      let upscaled = upscale(tile, factor: 4),
+                      let recognitionImage = enhancingLightText ? enhanceLightText(upscaled) : upscaled else { continue }
                 let request = VNRecognizeTextRequest()
                 request.recognitionLevel = .accurate
                 request.usesLanguageCorrection = false
                 request.minimumTextHeight = 0.004
                 request.recognitionLanguages = ["zh-Hans", "zh-Hant", "en-US"]
-                try VNImageRequestHandler(cgImage: upscaled, orientation: .up).perform([request])
+                try VNImageRequestHandler(cgImage: recognitionImage, orientation: .up).perform([request])
                 for observation in request.results ?? [] {
                     guard let candidate = observation.topCandidates(1).first,
                           candidate.confidence >= 0.2 else { continue }
@@ -134,6 +158,10 @@ nonisolated enum WatermarkRemovalProcessor {
                     )
                     guard box.height * CGFloat(height) >= 4,
                           box.width * CGFloat(width) / max(box.height * CGFloat(height), 1) <= 12 else { continue }
+                    if enhancingLightText {
+                        guard let rgbaBytes,
+                              isLowContrastText(box: box, bytes: rgbaBytes, width: width, height: height) else { continue }
+                    }
                     observations.append(TextObservation(numericToken: numericToken(candidate.string), boundingBox: box))
                 }
             }
@@ -165,6 +193,55 @@ nonisolated enum WatermarkRemovalProcessor {
         return centers.contains {
             abs($0.x - first.boundingBox.midX) > 0.08 || abs($0.y - first.boundingBox.midY) > 0.08
         }
+    }
+
+    private static func rgbaBytes(for image: CGImage, width: Int, height: Int) -> [UInt8]? {
+        guard let context = CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let data = context.data else { return nil }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return Array(UnsafeBufferPointer(start: data.assumingMemoryBound(to: UInt8.self), count: width * height * 4))
+    }
+
+    private static func isLowContrastText(box: CGRect, bytes: [UInt8], width: Int, height: Int) -> Bool {
+        let minX = max(0, Int((box.minX * CGFloat(width)).rounded(.down)) - 2)
+        let maxX = min(width, Int((box.maxX * CGFloat(width)).rounded(.up)) + 2)
+        let minY = max(0, Int(((1 - box.maxY) * CGFloat(height)).rounded(.down)) - 2)
+        let maxY = min(height, Int(((1 - box.minY) * CGFloat(height)).rounded(.up)) + 2)
+        guard maxX > minX, maxY > minY else { return false }
+        var dark = 0
+        var mid = 0
+        var total = 0
+        for y in minY..<maxY {
+            for x in minX..<maxX {
+                let index = (y * width + x) * 4
+                let luminance = (Int(bytes[index]) + Int(bytes[index + 1]) + Int(bytes[index + 2])) / 3
+                total += 1
+                if luminance < 150 { dark += 1 }
+                if luminance >= 150 && luminance < 250 { mid += 1 }
+            }
+        }
+        return total > 0 && Double(dark) / Double(total) < 0.08 && Double(mid) / Double(total) >= 0.02
+    }
+
+    private static func enhanceLightText(_ image: CGImage) -> CGImage? {
+        guard let context = CGContext(
+            data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+            bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let data = context.data else { return nil }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        let bytes = data.assumingMemoryBound(to: UInt8.self)
+        for index in stride(from: 0, to: image.width * image.height * 4, by: 4) {
+            let luminance = (Int(bytes[index]) + Int(bytes[index + 1]) + Int(bytes[index + 2])) / 3
+            let value = max(0, min(255, (255 - luminance) * 5))
+            bytes[index] = UInt8(value)
+            bytes[index + 1] = UInt8(value)
+            bytes[index + 2] = UInt8(value)
+        }
+        return context.makeImage()
     }
 
     private static func upscale(_ image: CGImage, factor: CGFloat) -> CGImage? {

@@ -16,6 +16,73 @@ nonisolated enum RepeatedWatermarkRepair {
         let score: Double
     }
 
+    static func repairDetectedLightRegions(image: NSImage, regionGroups: [[CGRect]]) throws -> WatermarkRemovalProcessor.AutomaticResult? {
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            throw WatermarkRemovalError.invalidImage
+        }
+        let width = cgImage.width
+        let height = cgImage.height
+        let bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        guard let context = CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let data = context.data else { throw WatermarkRemovalError.cannotCreateBitmap }
+        context.draw(cgImage, in: bounds)
+        let source = Array(UnsafeBufferPointer(start: data.assumingMemoryBound(to: UInt8.self), count: width * height * 4))
+        var mask = [Bool](repeating: false, count: width * height)
+        for group in regionGroups {
+            for region in group {
+                let rect = region.insetBy(dx: -2, dy: -2).integral.intersection(bounds)
+                let pixelCount = max(1, Int(rect.width * rect.height))
+                let darkCount = (Int(rect.minY)..<Int(rect.maxY)).reduce(0) { count, y in
+                    count + (Int(rect.minX)..<Int(rect.maxX)).reduce(0) { subtotal, x in
+                        let index = (y * width + x) * 4
+                        let luminance = (Int(source[index]) + Int(source[index + 1]) + Int(source[index + 2])) / 3
+                        return subtotal + (luminance < 150 ? 1 : 0)
+                    }
+                }
+                guard Double(darkCount) / Double(pixelCount) < 0.01 else { continue }
+                for y in Int(rect.minY)..<Int(rect.maxY) {
+                    for x in Int(rect.minX)..<Int(rect.maxX) {
+                        let index = (y * width + x) * 4
+                        let channels = (0..<3).map { Int(source[index + $0]) }
+                        let luminance = channels.reduce(0, +) / 3
+                        if luminance >= 180 && luminance < 252 && channels.max()! - channels.min()! <= 8 {
+                            mask[y * width + x] = true
+                        }
+                    }
+                }
+            }
+        }
+        guard mask.contains(true) else { return nil }
+        var output = source
+        var changed = 0
+        for index in mask.indices where mask[index] {
+            let x = index % width
+            let y = index / width
+            var neighbors: [[UInt8]] = []
+            for radius in 1...4 {
+                for (nx, ny) in [(x - radius, y), (x + radius, y), (x, y - radius), (x, y + radius)]
+                where nx >= 0 && nx < width && ny >= 0 && ny < height && !mask[ny * width + nx] {
+                    let neighbor = (ny * width + nx) * 4
+                    neighbors.append(Array(source[neighbor..<neighbor + 3]))
+                }
+            }
+            guard neighbors.count >= 2 else { continue }
+            for channel in 0..<3 {
+                output[index * 4 + channel] = neighbors.map { $0[channel] }.sorted()[neighbors.count / 2]
+            }
+            changed += 1
+        }
+        guard changed > 0 else { return nil }
+        output.withUnsafeBytes { bytes in
+            if let baseAddress = bytes.baseAddress { data.copyMemory(from: baseAddress, byteCount: output.count) }
+        }
+        guard let result = context.makeImage() else { throw WatermarkRemovalError.cannotCreateBitmap }
+        return .init(image: NSImage(cgImage: result, size: image.size), detectedRegionCount: regionGroups.reduce(0) { $0 + $1.count })
+    }
+
     static func repair(image: NSImage, regionGroups: [[CGRect]]) throws -> WatermarkRemovalProcessor.AutomaticResult {
         guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             throw WatermarkRemovalError.invalidImage
