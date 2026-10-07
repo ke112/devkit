@@ -287,6 +287,54 @@ nonisolated enum WatermarkRemovalProcessor {
             }
             remaining -= filledThisRound.count
         }
+        // Residue sweep: after the main correction, scan the repaired output for
+        // any remaining green-dominant pixels (faint X marks the mask/alpha pass
+        // missed over complex content). Each residue pixel takes the per-channel
+        // median of non-green neighbors in a 7px window; a couple of passes catch
+        // clustered leftovers without touching corrected content.
+        for sweepPass in 0..<2 {
+            var residuePixels: [Int] = []
+            for index in 0..<(width * height) {
+                guard repairMask[index] else { continue }
+                let red = Int(pixels[index * 3]), green = Int(pixels[index * 3 + 1]), blue = Int(pixels[index * 3 + 2])
+                if green - (red + blue) / 2 > 10 { residuePixels.append(index) }
+            }
+            guard residuePixels.count >= 8 else { break }
+            var replacements: [Int: (UInt8, UInt8, UInt8)] = [:]
+            for index in residuePixels {
+                let x = index % width
+                let y = index / width
+                var reds: [Int] = []
+                var greens: [Int] = []
+                var blues: [Int] = []
+                for dy in -7...7 {
+                    for dx in -7...7 {
+                        guard dx != 0 || dy != 0 else { continue }
+                        let nx = x + dx, ny = y + dy
+                        guard nx >= 0, nx < width, ny >= 0, ny < height else { continue }
+                        let neighbor = ny * width + nx
+                        let nr = Int(pixels[neighbor * 3]), ng = Int(pixels[neighbor * 3 + 1]), nb = Int(pixels[neighbor * 3 + 2])
+                        // Skip pixels that are themselves green-dominant residue.
+                        if ng - (nr + nb) / 2 > 10 { continue }
+                        reds.append(nr)
+                        greens.append(ng)
+                        blues.append(nb)
+                    }
+                }
+                guard reds.count >= 3 else { continue }
+                replacements[index] = (
+                    UInt8(reds.sorted()[reds.count / 2]),
+                    UInt8(greens.sorted()[greens.count / 2]),
+                    UInt8(blues.sorted()[blues.count / 2])
+                )
+            }
+            guard !replacements.isEmpty else { break }
+            for (index, value) in replacements {
+                pixels[index * 3] = value.0
+                pixels[index * 3 + 1] = value.1
+                pixels[index * 3 + 2] = value.2
+            }
+        }
         var output = [UInt8](repeating: 0, count: width * height * 4)
         for index in 0..<(width * height) {
             output[index * 4] = pixels[index * 3]
