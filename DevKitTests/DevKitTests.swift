@@ -327,6 +327,242 @@ struct DevKitTests {
         #expect(changedContentPixels == 0)
     }
 
+    @Test func automaticWatermarkRemovalCoversNameAndNumberWatermarkUnits() throws {
+        func makeNamedWatermarkDocument(includeWatermarks: Bool) -> NSImage {
+            let image = makeImage(width: 640, height: 800, color: .white)
+            let bitmap = image.representations[0] as! NSBitmapImageRep
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+            defer { NSGraphicsContext.restoreGraphicsState() }
+            let bodyAttributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 18), .foregroundColor: NSColor.black,
+            ]
+            ("Quarterly report" as NSString).draw(at: CGPoint(x: 30, y: 750), withAttributes: bodyAttributes)
+            for (index, y) in [620, 390, 160].enumerated() {
+                ("Section \(index + 1): preserve this content." as NSString)
+                    .draw(at: CGPoint(x: 35, y: y + 48), withAttributes: bodyAttributes)
+            }
+            if includeWatermarks {
+                for (index, y) in [80, 240, 400, 560, 720].enumerated() {
+                    for x in [40 + index * 40, 360 + index * 40] {
+                        ("张志华 6989" as NSString).draw(at: CGPoint(x: x, y: y), withAttributes: [
+                            .font: NSFont.systemFont(ofSize: 16, weight: .regular),
+                            .foregroundColor: NSColor.black.withAlphaComponent(0.2),
+                        ])
+                    }
+                }
+            }
+            return image
+        }
+
+        let clean = makeNamedWatermarkDocument(includeWatermarks: false)
+        let marked = makeNamedWatermarkDocument(includeWatermarks: true)
+        let result = try WatermarkRemovalProcessor.removeDetectedWatermarks(from: marked)
+        let original = try #require(NSBitmapImageRep(data: WatermarkRemovalProcessor.pngData(for: marked)))
+        let expected = try #require(NSBitmapImageRep(data: WatermarkRemovalProcessor.pngData(for: clean)))
+        let actual = try #require(NSBitmapImageRep(data: WatermarkRemovalProcessor.pngData(for: result.image)))
+        var remainingWatermarkPixels = 0
+        var changedContentPixels = 0
+        var remainingLocations: [String] = []
+        for y in 0..<original.pixelsHigh {
+            for x in 0..<original.pixelsWide {
+                let before = original.colorAt(x: x, y: y)
+                let after = actual.colorAt(x: x, y: y)
+                let target = expected.colorAt(x: x, y: y)
+                if before == target {
+                    if after != before { changedContentPixels += 1 }
+                } else if after != target {
+                    remainingWatermarkPixels += 1
+                    if remainingLocations.count < 15 { remainingLocations.append("\(x),\(y): \(String(describing: after))") }
+                }
+            }
+        }
+        #expect(remainingWatermarkPixels == 0, "\(remainingLocations)")
+        #expect(changedContentPixels == 0)
+    }
+
+    @Test func automaticWatermarkRemovalCoversTextOnlyWatermark() throws {
+        func makeTextOnlyWatermarkDocument(includeWatermarks: Bool) -> NSImage {
+            let image = makeImage(width: 640, height: 800, color: .white)
+            let bitmap = image.representations[0] as! NSBitmapImageRep
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+            defer { NSGraphicsContext.restoreGraphicsState() }
+            let bodyAttributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 18), .foregroundColor: NSColor.black,
+            ]
+            ("Quarterly report" as NSString).draw(at: CGPoint(x: 30, y: 750), withAttributes: bodyAttributes)
+            for (index, y) in [620, 390, 160].enumerated() {
+                ("Section \(index + 1): preserve this content." as NSString)
+                    .draw(at: CGPoint(x: 35, y: y + 48), withAttributes: bodyAttributes)
+            }
+            if includeWatermarks {
+                for (index, y) in [80, 240, 400, 560, 720].enumerated() {
+                    for x in [40 + index * 40, 360 + index * 40] {
+                        ("内部资料 请勿外传" as NSString).draw(at: CGPoint(x: x, y: y), withAttributes: [
+                            .font: NSFont.systemFont(ofSize: 16, weight: .regular),
+                            .foregroundColor: NSColor.black.withAlphaComponent(0.2),
+                        ])
+                    }
+                }
+            }
+            return image
+        }
+
+        let clean = makeTextOnlyWatermarkDocument(includeWatermarks: false)
+        let marked = makeTextOnlyWatermarkDocument(includeWatermarks: true)
+        let result = try WatermarkRemovalProcessor.removeDetectedWatermarks(from: marked)
+        let original = try #require(NSBitmapImageRep(data: WatermarkRemovalProcessor.pngData(for: marked)))
+        let expected = try #require(NSBitmapImageRep(data: WatermarkRemovalProcessor.pngData(for: clean)))
+        let actual = try #require(NSBitmapImageRep(data: WatermarkRemovalProcessor.pngData(for: result.image)))
+        var remainingWatermarkPixels = 0
+        var changedContentPixels = 0
+        var remainingLocations: [String] = []
+        for y in 0..<original.pixelsHigh {
+            for x in 0..<original.pixelsWide {
+                let before = original.colorAt(x: x, y: y)
+                let after = actual.colorAt(x: x, y: y)
+                let target = expected.colorAt(x: x, y: y)
+                if before == target {
+                    if after != before { changedContentPixels += 1 }
+                } else if after != target {
+                    remainingWatermarkPixels += 1
+                    if remainingLocations.count < 15 { remainingLocations.append("\(x),\(y): \(String(describing: after))") }
+                }
+            }
+        }
+        #expect(remainingWatermarkPixels == 0, "\(remainingLocations)")
+        #expect(changedContentPixels == 0)
+    }
+
+    @Test func chromaWatermarkRepairRemovesColoredOverlayOverPhoto() throws {
+        // The photo and watermark are rasterized byte-wise — no AppKit drawing — so
+        // the channel's input is bit-identical across runs and machines. A smooth
+        // varying gradient stands in for a busy portrait; the watermark is tiled
+        // green diagonal bars, the way tiled translucent text reads to a chroma mask.
+        let width = 480, height = 640
+        var markedBytes = [UInt8](repeating: 0, count: width * height * 3)
+        var cleanBytes = [UInt8](repeating: 0, count: width * height * 3)
+        func fill(_ x: Int, _ y: Int, red: UInt8, green: UInt8, blue: UInt8) {
+            let base = (y * width + x) * 3
+            cleanBytes[base] = red
+            cleanBytes[base + 1] = green
+            cleanBytes[base + 2] = blue
+        }
+        for y in 0..<height {
+            for x in 0..<width {
+                // Smooth low-frequency variation: a photo's local background is
+                // near-uniform at glyph scale, which is the regime the channel
+                // targets (per-pixel noise is out of scope for a local method).
+                let value = (x / 6 * 5 + y / 8 * 7) % 89
+                fill(x, y, red: UInt8(120 + value * 102 / 88), green: UInt8(130 + value * 77 / 88), blue: UInt8(140 + value * 51 / 88))
+            }
+        }
+        markedBytes = cleanBytes
+        func blendWatermark(_ x: Int, _ y: Int) {
+            guard x >= 0, x < width, y >= 0, y < height else { return }
+            let base = (y * width + x) * 3
+            let alpha = 0.85
+            for (channel, ink) in [25.0, 166.0, 89.0].enumerated() {
+                let background = Double(markedBytes[base + channel])
+                markedBytes[base + channel] = UInt8((background + alpha * (ink - background)).rounded())
+            }
+        }
+        for (index, tileY) in [60, 220, 380, 540].enumerated() {
+            for tileX in [30 + index * 30, 240 + index * 30] {
+                for bar in 0..<3 {
+                    let barX = tileX + bar * 14
+                    for i in 0..<26 {
+                        for t in 0..<7 {
+                            blendWatermark(barX + i / 2 + t, tileY + i)
+                        }
+                    }
+                }
+                for i in 0..<18 {
+                    for t in 0..<7 {
+                        blendWatermark(tileX + 48 + t, tileY + 4 + i)
+                    }
+                    for edge in 0..<4 {
+                        blendWatermark(tileX + 48, tileY + 4 + i)
+                        blendWatermark(tileX + 48 + 22 + edge, tileY + 4 + i)
+                    }
+                }
+            }
+        }
+        func bitmap(_ bytes: [UInt8]) throws -> NSBitmapImageRep {
+            let bitmap = NSBitmapImageRep(
+                bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+            for y in 0..<height {
+                for x in 0..<width {
+                    let base = (y * width + x) * 3
+                    bitmap.setColor(NSColor(deviceRed: Double(bytes[base]) / 255, green: Double(bytes[base + 1]) / 255, blue: Double(bytes[base + 2]) / 255, alpha: 1), atX: x, y: y)
+                }
+            }
+            return bitmap
+        }
+        let expected = try bitmap(cleanBytes)
+        let original = try bitmap(markedBytes)
+        let markedImage = NSImage(size: NSSize(width: width, height: height))
+        markedImage.addRepresentation(original)
+        let result = try #require(try WatermarkRemovalProcessor.chromaWatermarkRepair(image: markedImage))
+        let actual = try #require(NSBitmapImageRep(data: WatermarkRemovalProcessor.pngData(for: result.image)))
+
+        // Verification reads raw device RGB — what the user sees — instead of the
+        // display-dependent calibrated values that colorAt returns.
+        func rawBytes(_ bitmap: NSBitmapImageRep) throws -> [UInt8] {
+            let pointer = try #require(bitmap.bitmapData)
+            let stride = bitmap.bytesPerRow
+            var bytes = [UInt8](repeating: 0, count: width * height * 3)
+            for y in 0..<height {
+                for x in 0..<width {
+                    let source = y * stride + x * bitmap.bitsPerPixel / 8
+                    let target = (y * width + x) * 3
+                    bytes[target] = pointer[source]
+                    bytes[target + 1] = pointer[source + 1]
+                    bytes[target + 2] = pointer[source + 2]
+                }
+            }
+            return bytes
+        }
+        let cleanRaw = try rawBytes(expected)
+        let markedRaw = try rawBytes(original)
+        let actualRaw = try rawBytes(actual)
+
+        var watermarkPixels = 0
+        var greenResidue = 0
+        var errorCount = 0
+        var maxError = 0
+        for index in 0..<(width * height) {
+            let base = index * 3
+            let wasWatermark = markedRaw[base] != cleanRaw[base]
+                || markedRaw[base + 1] != cleanRaw[base + 1]
+                || markedRaw[base + 2] != cleanRaw[base + 2]
+            if wasWatermark {
+                watermarkPixels += 1
+                let excessAfter = Int(actualRaw[base + 1]) - (Int(actualRaw[base]) + Int(actualRaw[base + 2])) / 2
+                if excessAfter > 30 { greenResidue += 1 }
+            } else {
+                let error = max(abs(Int(actualRaw[base]) - Int(cleanRaw[base])),
+                                abs(Int(actualRaw[base + 1]) - Int(cleanRaw[base + 1])),
+                                abs(Int(actualRaw[base + 2]) - Int(cleanRaw[base + 2])))
+                if error > 25 {
+                    errorCount += 1
+                    maxError = max(maxError, error)
+                }
+            }
+        }
+        // Partial-coverage glyph-edge pixels keep a fraction of the tint; the bound
+        // requires the bulk of the overlay to be gone while content stays intact.
+        #expect(greenResidue < watermarkPixels / 2, "green residue: \(greenResidue)/\(watermarkPixels)")
+        // The synthetic background is deliberate high-frequency noise; a diffusion
+        // fill cannot reproduce it per-pixel. The bound guards against gross damage
+        // (smears, color blotches) rather than per-pixel fidelity.
+        #expect(errorCount < width * height / 25, "content damage: \(errorCount) px")
+        #expect(maxError < 140, "content damage max error: \(maxError)")
+    }
+
     private func makeWatermarkDocument(includeWatermarks: Bool, overlappingContent: Bool = false, darkBackground: Bool = false) -> NSImage {
         let image = makeImage(width: 640, height: 800, color: darkBackground ? NSColor(white: 0.1, alpha: 1) : .white)
         let bitmap = image.representations[0] as! NSBitmapImageRep
@@ -499,16 +735,22 @@ struct DevKitTests {
         #expect(!ranOnMainThread)
     }
 
-    @Test func watermarkTextNormalizationGroupsWhitespaceAndPunctuation() {
+    @Test func watermarkTextFingerprintsCoverAnyScriptAndRejectSolidText() {
         #expect(
             WatermarkRemovalProcessor.normalizedText("张志华 6989")
                 == WatermarkRemovalProcessor.normalizedText("张志华-6989")
         )
-        #expect(WatermarkRemovalProcessor.numericToken("张志华 6989") == "6989")
-        #expect(WatermarkRemovalProcessor.numericToken("标题 12") == nil)
-        #expect(WatermarkRemovalProcessor.numericToken("正文地址 10.100.103.91:3004/credits-rules") == nil)
-        #expect(WatermarkRemovalProcessor.numericTokensMatch("6989", "6982"))
-        #expect(!WatermarkRemovalProcessor.numericTokensMatch("6989", "6882"))
+        #expect(WatermarkRemovalProcessor.textFingerprint("张志华 6989") == "张志华6989")
+        #expect(WatermarkRemovalProcessor.textFingerprint("6989") == "6989")
+        #expect(WatermarkRemovalProcessor.textFingerprint("内部资料") == "内部资料")
+        #expect(WatermarkRemovalProcessor.textFingerprint("ok") == nil)
+        #expect(WatermarkRemovalProcessor.textFingerprint("正文地址 10.100.103.91:3004/credits-rules") == nil)
+        #expect(WatermarkRemovalProcessor.fingerprintsMatch("6989", "6982"))
+        #expect(!WatermarkRemovalProcessor.fingerprintsMatch("6989", "6882"))
+        #expect(WatermarkRemovalProcessor.fingerprintsMatch("高鹏飞3348", "高鹏飞3348"))
+        #expect(WatermarkRemovalProcessor.fingerprintsMatch("高鹏飞3348", "高鹏飞3346"))
+        #expect(!WatermarkRemovalProcessor.fingerprintsMatch("高鹏飞3348", "高鹏飞6648"))
+        #expect(!WatermarkRemovalProcessor.fingerprintsMatch("高鹏飞3348", "鹏飞3348"))
     }
 
     @Test func homeFeaturePreferencesMoveFeatureToTargetPosition() {
