@@ -10,6 +10,12 @@
 - Simulator reset, delete, recreate, and Runtime removal require an explicit request for that exact operation, including during UI verification.
 - User instructions take precedence over skill guidance, subject to higher-priority instructions. If a skill blocks requested work or requires confirmation, link the exact file, quote the rule, and explain its applicability.
 
+## Third-Party Dependencies
+
+- All third-party libraries must use an exact, fixed release version. Do not use version ranges, minimum-version constraints, branches, or floating references.
+- For Swift Package Manager, use `.package(url: ..., exact: "<version>")` in `Package.swift`, or `exactVersion` with a specific version in Xcode package requirements. A lockfile alone does not replace an exact dependency declaration.
+- When adding or upgrading a dependency, update the version requirement and the applicable lockfile together; preserve unrelated dependency versions.
+
 ## Scripts
 
 - Keep reusable automation in standalone `*.py` or `*.sh` files with entry points, arguments, and usage/help text so it can be exported and run independently.

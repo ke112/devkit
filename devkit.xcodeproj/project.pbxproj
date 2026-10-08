@@ -220,8 +220,8 @@
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/Curzibn/Luban-iOS";
 			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 0.1.0;
+				kind = exactVersion;
+				version = 0.1.1;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
