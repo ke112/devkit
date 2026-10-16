@@ -14,6 +14,7 @@ struct LubanImageItem: Identifiable, Equatable {
     var compressionPercentage: Double?
     var elapsedSeconds: Double?
     var destinationPath: String?
+    var previewOriginalURL: URL? = nil
 }
 
 extension LubanImageItem: ImageCompressionTaskItem {
@@ -74,6 +75,7 @@ final class LubanCompressionModel {
     private var activeSelectionToken = UUID()
     private var compressionTask: Task<Void, Never>?
     private let preferencesDefaults: UserDefaults
+    private var previewOriginals = ImageCompressionOriginals()
 
     init(preferencesDefaults: UserDefaults = .standard) {
         self.preferencesDefaults = preferencesDefaults
@@ -256,6 +258,9 @@ final class LubanCompressionModel {
                     let startedAt = Date()
                     let outputURL: URL
                     if shouldReplace {
+                        let originalURL = try await self.previewOriginals.capture(at: item.id)
+                        guard !Task.isCancelled else { break }
+                        self.updateItem(item.id) { $0.previewOriginalURL = originalURL }
                         // 替换原图时先压缩到临时文件，成功后再覆盖
                         let temp = FileManager.default.temporaryDirectory
                             .appendingPathComponent(UUID().uuidString)
@@ -342,6 +347,7 @@ final class LubanCompressionModel {
         scanTask = nil
         selectedURLs = []
         imageItems = []
+        previewOriginals = ImageCompressionOriginals()
         outputDirectoryURL = nil
         operationStatus = "请选择图片或文件夹"
         operationStatusSystemImage = "photo.on.rectangle"

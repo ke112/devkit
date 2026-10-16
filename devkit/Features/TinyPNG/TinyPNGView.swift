@@ -145,6 +145,7 @@ struct TinyPNGImageItem: Identifiable, Equatable {
     var compressionPercentage: Double? = nil
     var elapsedSeconds: Double? = nil
     var destinationPath: String? = nil
+    var previewOriginalURL: URL? = nil
 }
 
 extension TinyPNGImageItem: ImageCompressionTaskItem {
@@ -238,6 +239,7 @@ final class TinyPNGModel {
     private var outputEventBuffer = ""
     private var processCancellation: StreamingProcessCancellation?
     private let preferencesDefaults: UserDefaults
+    private var previewOriginals = ImageCompressionOriginals()
 
     init(preferencesDefaults: UserDefaults = .standard) {
         self.preferencesDefaults = preferencesDefaults
@@ -433,6 +435,16 @@ final class TinyPNGModel {
             }
 
             do {
+                if shouldReplaceOriginals, let self {
+                    // The script scans every selected root again, including previously completed files.
+                    for item in self.imageItems where item.status != .skipped {
+                        guard !cancellation.isCancelled else { throw CancellationError() }
+                        let originalURL = try await self.previewOriginals.capture(at: item.id)
+                        guard let index = self.imageItems.firstIndex(where: { $0.id == item.id }) else { continue }
+                        self.imageItems[index].previewOriginalURL = originalURL
+                    }
+                }
+                guard !cancellation.isCancelled else { throw CancellationError() }
                 let result = try await StreamingProcess.run(
                     executableURL: URL(fileURLWithPath: "/bin/zsh"),
                     arguments: [
@@ -553,6 +565,7 @@ final class TinyPNGModel {
         selectedURLs = []
         selectionSummary = nil
         imageItems = []
+        previewOriginals = ImageCompressionOriginals()
         output = ""
         outputEventBuffer = ""
         outputDirectoryURL = nil

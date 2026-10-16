@@ -82,7 +82,10 @@ struct ImageOverlayView: View {
                     topImage: topImage
                 )
                 .background {
-                    PreviewWindowConfigurator()
+                    ResizableSheetConfigurator(
+                        initialSize: PreviewWindowMetrics.initialSize,
+                        minimumSize: PreviewWindowMetrics.minimumSize
+                    )
                 }
             }
         }
@@ -1174,28 +1177,6 @@ private struct CompositePreview: View {
             exportAlertTitle = "导出失败"
             exportAlertMessage = error.localizedDescription
         }
-    }
-}
-
-private struct PreviewWindowConfigurator: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView {
-        ResizableSheetHostView()
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {}
-}
-
-private final class ResizableSheetHostView: NSView {
-    private var hasConfiguredWindow = false
-
-    override func layout() {
-        super.layout()
-        guard !hasConfiguredWindow, let window else { return }
-
-        hasConfiguredWindow = true
-        window.setContentSize(PreviewWindowMetrics.initialSize)
-        window.styleMask.insert(.resizable)
-        window.contentMinSize = PreviewWindowMetrics.minimumSize
     }
 }
 

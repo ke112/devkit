@@ -6,6 +6,8 @@ import SwiftUI
 /// 三个图片压缩/转换页共用的任务行展示数据；由各页面从自己的 Item 映射而来。
 struct ImageTaskDisplayModel: Identifiable, Equatable {
     let id: URL
+    let originalPreviewURL: URL
+    let resultLabel: String
     let title: String
     let thumbnailURL: URL
     let sizeSummary: String?
@@ -23,6 +25,7 @@ struct ImageTaskDisplayModel: Identifiable, Equatable {
 /// 三个页面任务条目的共用读取接口；由各页 Item 结构体实现，供展示行统一映射。
 protocol ImageCompressionTaskItem {
     var id: URL { get }
+    var previewOriginalURL: URL? { get }
     var relativePath: String { get }
     var byteCount: Int64 { get }
     var status: ImageCompressionTaskStatus { get }
@@ -37,6 +40,8 @@ extension ImageTaskDisplayModel {
     init(item: some ImageCompressionTaskItem, resultLabel: String, verb: String) {
         self.init(
             id: item.id,
+            originalPreviewURL: item.previewOriginalURL ?? item.id,
+            resultLabel: resultLabel,
             title: item.relativePath,
             thumbnailURL: item.id,
             sizeSummary: Self.sizeSummary(for: item, resultLabel: resultLabel),
@@ -44,7 +49,7 @@ extension ImageTaskDisplayModel {
             destinationPath: item.destinationPath,
             stateTitle: item.status.title(verb: verb),
             stateColor: item.status.color,
-            canPreview: item.status == .success
+            canPreview: item.status == .success && item.destinationPath != nil
         )
     }
 
@@ -81,23 +86,31 @@ enum CompressionBytesFormatter {
 struct ImageCompressionPreviewSheet: View {
     @Environment(\.dismiss) private var dismiss
 
-    let imageURL: URL
+    let originalURL: URL
+    let compressedURL: URL
+    let resultLabel: String
 
     @State private var loadState = PreviewLoadState.loading
+    @State private var dividerFraction = 0.5
 
     private enum PreviewLoadState {
         case loading
-        case loaded(CGImage)
+        case loaded(original: CGImage, compressed: CGImage)
         case failed
     }
 
     var body: some View {
         VStack(spacing: 16) {
             HStack {
-                Text(imageURL.lastPathComponent)
-                    .font(.headline)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("图片对比")
+                        .font(.headline)
+                    Text(originalURL.lastPathComponent)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .lineLimit(1)
+                .truncationMode(.middle)
                 Spacer()
                 Button("完成") { dismiss() }
                     .keyboardShortcut(.cancelAction)
@@ -107,28 +120,132 @@ struct ImageCompressionPreviewSheet: View {
             case .loading:
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            case .loaded(let image):
-                Image(image, scale: 1, orientation: .up, label: Text(imageURL.lastPathComponent))
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .loaded(let original, let compressed):
+                comparison(original: original, compressed: compressed)
             case .failed:
                 ContentUnavailableView(
-                    "无法读取图片",
+                    "无法读取对比图片",
                     systemImage: "photo.slash",
-                    description: Text(imageURL.path)
+                    description: Text("请确认原图和处理后文件仍然存在且可读取。\n原图：\(originalURL.path)\n处理后：\(compressedURL.path)")
                 )
+            }
+
+            if case .loaded = loadState {
+                HStack(spacing: 10) {
+                    Text(resultLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Slider(value: $dividerFraction, in: 0...1)
+                        .accessibilityLabel("对比滑杆")
+                    Text("原图")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text("左右拖动图片中的分界线或滑杆：左侧\(resultLabel)，右侧原图")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(24)
-        .frame(minWidth: 720, minHeight: 560)
-        .task(id: imageURL) {
-            let image = await ImageThumbnailLoader.thumbnail(
-                at: imageURL,
+        .frame(
+            minWidth: 720, idealWidth: 720, maxWidth: .infinity,
+            minHeight: 560, idealHeight: 560, maxHeight: .infinity
+        )
+        .background {
+            ResizableSheetConfigurator(
+                initialSize: CGSize(width: 720, height: 560),
+                minimumSize: CGSize(width: 720, height: 560)
+            )
+        }
+        .task(id: "\(originalURL.path)|\(compressedURL.path)") {
+            async let original = ImageThumbnailLoader.thumbnail(
+                at: originalURL,
                 maxPixelSize: ImageThumbnailLoader.previewMaxPixelSize
             )
-            loadState = image.map(PreviewLoadState.loaded) ?? .failed
+            async let compressed = ImageThumbnailLoader.thumbnail(
+                at: compressedURL,
+                maxPixelSize: ImageThumbnailLoader.previewMaxPixelSize
+            )
+            let (originalImage, compressedImage) = await (original, compressed)
+            if let originalImage, let compressedImage {
+                loadState = .loaded(original: originalImage, compressed: compressedImage)
+            } else {
+                loadState = .failed
+            }
         }
+    }
+
+    private func comparison(original: CGImage, compressed: CGImage) -> some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                comparisonImage(original, in: geometry.size)
+                comparisonImage(compressed, in: geometry.size)
+                    .mask(alignment: .leading) {
+                        Rectangle()
+                            .frame(width: geometry.size.width * dividerFraction)
+                    }
+
+                let dividerX = geometry.size.width * dividerFraction
+                Rectangle()
+                    .fill(.blue)
+                    .frame(width: 3)
+                    .overlay {
+                        Rectangle()
+                            .stroke(.white.opacity(0.85), lineWidth: 1)
+                    }
+                    .shadow(color: .black.opacity(0.3), radius: 2)
+                    .position(x: dividerX, y: geometry.size.height / 2)
+                Image(systemName: "arrow.left.and.right")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 36, height: 36)
+                    .background(Circle().fill(.blue))
+                    .overlay {
+                        Circle()
+                            .stroke(.white.opacity(0.9), lineWidth: 2)
+                    }
+                    .shadow(color: .black.opacity(0.3), radius: 4, y: 1)
+                    .position(x: dividerX, y: geometry.size.height / 2)
+            }
+            .background(Color(nsColor: .controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        dividerFraction = min(max(value.location.x / max(geometry.size.width, 1), 0), 1)
+                    }
+            )
+            .overlay(alignment: .topLeading) {
+                comparisonBadge(resultLabel)
+                    .padding(12)
+                    .allowsHitTesting(false)
+            }
+            .overlay(alignment: .topTrailing) {
+                comparisonBadge("原图")
+                    .padding(12)
+                    .allowsHitTesting(false)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func comparisonImage(_ image: CGImage, in size: CGSize) -> some View {
+        Image(image, scale: 1, orientation: .up, label: Text("图片"))
+            .resizable()
+            .scaledToFit()
+            .frame(width: size.width, height: size.height)
+            // Transparent result pixels must not reveal the reference layer beneath them.
+            .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private func comparisonBadge(_ title: String) -> some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 4))
     }
 }
 
@@ -174,7 +291,7 @@ struct ImageCompressionPageLayout<Extras: View>: View {
 
     @ViewBuilder var extras: Extras
 
-    @State private var previewURL: URL?
+    @State private var previewTarget: ImagePreviewTarget?
     @State private var showMissingFile = false
 
     var body: some View {
@@ -241,7 +358,14 @@ struct ImageCompressionPageLayout<Extras: View>: View {
                         destinationPath: task.destinationPath,
                         state: task.stateStyle,
                         showsPreviewButton: task.canPreview,
-                        onPreview: { previewURL = task.id },
+                        onPreview: {
+                            guard let destinationPath = task.destinationPath else { return }
+                            previewTarget = ImagePreviewTarget(
+                                originalURL: task.originalPreviewURL,
+                                compressedURL: URL(fileURLWithPath: destinationPath),
+                                resultLabel: task.resultLabel
+                            )
+                        },
                         onRevealSource: {
                             NSWorkspace.shared.activateFileViewerSelecting([task.id])
                         },
@@ -258,11 +382,12 @@ struct ImageCompressionPageLayout<Extras: View>: View {
         }
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .sheet(item: Binding(
-            get: { previewURL.map(ImagePreviewTarget.init) },
-            set: { previewURL = $0?.url }
-        )) { target in
-            ImageCompressionPreviewSheet(imageURL: target.url)
+        .sheet(item: $previewTarget) { target in
+            ImageCompressionPreviewSheet(
+                originalURL: target.originalURL,
+                compressedURL: target.compressedURL,
+                resultLabel: target.resultLabel
+            )
         }
         .alert("文件不存在", isPresented: $showMissingFile) {
             Button("好", role: .cancel) {}
@@ -334,6 +459,8 @@ struct ImageCompressionPageLayout<Extras: View>: View {
 }
 
 private struct ImagePreviewTarget: Identifiable {
-    let url: URL
-    var id: URL { url }
+    let originalURL: URL
+    let compressedURL: URL
+    let resultLabel: String
+    var id: String { "\(originalURL.path)|\(compressedURL.path)" }
 }
