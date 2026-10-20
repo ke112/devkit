@@ -1,6 +1,6 @@
 import Foundation
 
-/// 应用启动时静默准备图片功能依赖：cwebp（WebP 转换）与 python3 requests/urllib3（TinyPNG）。
+/// 应用启动时静默准备 cwebp（WebP 转换）与 TinyPNG 的独立 Python 环境。
 /// 依赖已就绪时脚本只做检测、不触发网络；安装失败保持静默，由功能页在运行时给出提示。
 enum DependencyBootstrap {
     static let scriptResourceName = "ensure_image_dependencies"

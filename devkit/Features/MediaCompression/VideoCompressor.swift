@@ -45,10 +45,12 @@ final class MediaVideoCompressor: @unchecked Sendable {
         config: MediaVideoCompressionConfig,
         progressHandler: @escaping @Sendable (Float) -> Void
     ) async throws -> Result {
+        try Task.checkCancellation()
         guard Self.isSupportedVideo(sourceURL) else { throw MediaCompressorError.unsupportedFile }
         let originalBytes = try fileSize(of: sourceURL)
         let asset = AVURLAsset(url: sourceURL)
         let duration = try await CMTimeGetSeconds(asset.load(.duration))
+        try Task.checkCancellation()
         let outputDirectory = try makeOutputDirectory(batch: config.batchDirectory, relativeDir: relativeDir)
         let destination = uniqueURL(for: sourceURL, in: outputDirectory, fileExtension: "mp4")
         guard let session = AVAssetExportSession(
@@ -66,26 +68,47 @@ final class MediaVideoCompressor: @unchecked Sendable {
                 if session.progress >= 1 { break }
             }
         }
+        defer { monitor.cancel() }
         do {
-            try await session.export(to: destination, as: .mp4)
+            try await withTaskCancellationHandler {
+                try Task.checkCancellation()
+                try await session.export(to: destination, as: .mp4)
+                try Task.checkCancellation()
+            } onCancel: {
+                session.cancelExport()
+            }
         } catch {
-            monitor.cancel()
             try? FileManager.default.removeItem(at: destination)
+            if Task.isCancelled { throw CancellationError() }
             throw MediaCompressorError.videoExportFailed(error.localizedDescription)
         }
-        monitor.cancel()
 
         let compressedBytes = try fileSize(of: destination)
         if compressedBytes >= originalBytes {
             try FileManager.default.removeItem(at: destination)
-            try FileManager.default.copyItem(at: sourceURL, to: destination)
-            return Result(destination: destination, originalBytes: originalBytes, compressedBytes: originalBytes, duration: duration, isCopiedFallback: true)
+            let originalDestination = try copyOriginal(at: sourceURL, into: outputDirectory)
+            return Result(destination: originalDestination, originalBytes: originalBytes, compressedBytes: originalBytes, duration: duration, isCopiedFallback: true)
         }
         return Result(destination: destination, originalBytes: originalBytes, compressedBytes: compressedBytes, duration: duration, isCopiedFallback: false)
     }
 
     nonisolated static func isSupportedVideo(_ url: URL) -> Bool {
         supportedExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    nonisolated func copyOriginal(at source: URL, into directory: URL) throws -> URL {
+        try Task.checkCancellation()
+        let destination = uniqueURL(for: source, in: directory)
+        var copied = false
+        do {
+            try FileManager.default.copyItem(at: source, to: destination)
+            copied = true
+            try Task.checkCancellation()
+            return destination
+        } catch {
+            if copied { try? FileManager.default.removeItem(at: destination) }
+            throw error
+        }
     }
 
     nonisolated private func collectVideos(in directory: URL, root: URL) -> [MediaCollectedVideo] {

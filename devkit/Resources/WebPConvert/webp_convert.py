@@ -15,12 +15,15 @@ WebP 批量转换工具
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
 import json
 import os
 import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -168,6 +171,53 @@ def encode_webp(src: Path, temp_output: Path, quality: int, max_side: int) -> st
     return f"cwebp 转换失败: {output[:120]}"
 
 
+def rename_exclusive(source: Path, destination: Path):
+    """macOS 的无覆盖重命名不依赖文件系统硬链接。"""
+    if sys.platform != "darwin":
+        raise OSError(errno.ENOTSUP, "Exclusive rename is unavailable")
+    rename = ctypes.CDLL(None, use_errno=True).renamex_np
+    rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(os.fsencode(source), os.fsencode(destination), 0x00000004) != 0:  # RENAME_EXCL
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code), str(destination))
+
+
+def publish_exclusive(temporary: Path, destination: Path):
+    try:
+        rename_exclusive(temporary, destination)
+        return
+    except OSError as error:
+        if error.errno not in (errno.ENOTSUP, errno.EINVAL, errno.ENOSYS):
+            raise
+    # Some volumes do not implement RENAME_EXCL. Exclusive creation still prevents
+    # overwriting; the caller retains the original until this copy completes.
+    with destination.open("xb") as output:
+        try:
+            with temporary.open("rb") as source:
+                shutil.copyfileobj(source, output)
+            output.flush()
+            os.fsync(output.fileno())
+            shutil.copystat(temporary, destination)
+        except BaseException:
+            output.close()
+            destination.unlink(missing_ok=True)
+            raise
+
+
+def publish_without_replacing(temporary: Path, destination: Path) -> Path:
+    """禁止覆盖现有文件，名称冲突时自动编号。"""
+    candidate = destination
+    suffix = 2
+    while True:
+        try:
+            publish_exclusive(temporary, candidate)
+            return candidate
+        except FileExistsError:
+            candidate = destination.with_name(f"{destination.stem}_{suffix}{destination.suffix}")
+            suffix += 1
+
+
 def convert_image(src_path: Path, dst_path: Path, quality: int, max_side: int, replace_source: bool = False) -> dict:
     """
     转换单张图片，只有结果更小时才落盘。
@@ -187,30 +237,33 @@ def convert_image(src_path: Path, dst_path: Path, quality: int, max_side: int, r
 
     started_at = time.time()
 
-    temp_output = dst_path.parent / f".{src_path.stem}.webp.tmp"
-    temp_output.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        dst_path.parent.mkdir(parents=True, exist_ok=True)
+        # 每个任务独占临时目录；同名 PNG/JPG 并发时不能共用编码文件。
+        with tempfile.TemporaryDirectory(prefix=".devkit-webp-", dir=dst_path.parent) as temporary:
+            temp_output = Path(temporary) / "result.webp"
+            error = encode_webp(src_path, temp_output, quality, max_side)
+            if error:
+                result["error"] = error
+                return result
 
-    error = encode_webp(src_path, temp_output, quality, max_side)
-    if error:
-        temp_output.unlink(missing_ok=True)
-        result["error"] = error
-        return result
+            new_size = temp_output.stat().st_size
+            if new_size >= result["before"]:
+                result["skipped"] = True
+                result["after"] = result["before"]
+                result["error"] = "WebP 未减小，已保留原文件"
+                return result
 
-    new_size = temp_output.stat().st_size
-    if new_size >= result["before"]:
-        # WebP 没有更小，保留原文件
-        temp_output.unlink(missing_ok=True)
-        result["skipped"] = True
-        result["after"] = result["before"]
-        result["error"] = "WebP 未减小，已保留原文件"
-        return result
-
-    dst_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(temp_output, dst_path)
-    if replace_source and src_path != dst_path:
-        src_path.unlink(missing_ok=True)
-    result["after"] = dst_path.stat().st_size
-    result["ok"] = True
+            candidate = publish_without_replacing(temp_output, dst_path)
+            result["dst"] = str(candidate)
+            if replace_source and src_path != candidate:
+                src_path.unlink()
+            result["after"] = new_size
+            result["ok"] = True
+    except OSError as error:
+        result["error"] = str(error)
+    finally:
+        result["elapsed"] = time.time() - started_at
     return result
 
 
@@ -325,16 +378,18 @@ def main():
 
     def copy_unchanged(root: Path, image: Path):
         """文件夹输出模式下，把未转换的原图按结构复制到输出目录"""
-        if args.replace or (len(input_roots) == 1 and root.is_file()):
-            return
+        if args.replace:
+            return image
         relative = relative_to_root(root, image)
-        if root.is_file():
+        if len(input_roots) == 1 or root.is_file():
             unchanged_dst = output_dir / relative
         else:
             unchanged_dst = output_dir / root.name / relative
         unchanged_dst.parent.mkdir(parents=True, exist_ok=True)
-        if not unchanged_dst.exists():
-            shutil.copy2(image, unchanged_dst)
+        with tempfile.TemporaryDirectory(prefix=".devkit-webp-", dir=unchanged_dst.parent) as temporary:
+            copy = Path(temporary) / image.name
+            shutil.copy2(image, copy)
+            return publish_without_replacing(copy, unchanged_dst)
 
     # 已是 WebP 的文件不重复编码
     tasks: list[tuple[Path, Path]] = []
@@ -348,6 +403,12 @@ def main():
                 too_small.append((root, image))
             else:
                 tasks.append((image, destination(root, image)))
+
+    # 先保留跳过的源 WebP，转换任务随后为冲突的输出名称自动编号。
+    for root, image in already_webp + too_small:
+        preserved = copy_unchanged(root, image)
+        size = image.stat().st_size
+        emit_event(image, preserved, size, size, False, True, "原文件保持不变")
 
     report_dir = output_dir
     if report_dir is None:
@@ -418,11 +479,8 @@ def main():
                     else:
                         failures += 1
                     source = Path(result["src"])
-                    copy_unchanged(root_of[source], source)
+                    result["dst"] = str(copy_unchanged(root_of[source], source))
                 emit_status(completed, total_all, result)
-
-    for _, image in already_webp + too_small:
-        copy_unchanged(root_of[image], image)
 
     saved_total = grand_before - grand_after
     saved_pct = saved_total / grand_before * 100 if grand_before > 0 else 0

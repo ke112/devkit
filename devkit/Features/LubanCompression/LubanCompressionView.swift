@@ -72,13 +72,23 @@ final class LubanCompressionModel {
     var outputDirectoryURL: URL?
 
     private var scanTask: Task<[ImageScanResult], Never>?
+    private var pendingScanURLs: [URL] = []
     private var activeSelectionToken = UUID()
     private var compressionTask: Task<Void, Never>?
     private let preferencesDefaults: UserDefaults
+    private let scanImage: @Sendable (URL) -> ImageScanResult
+    private let outputBaseDirectory: URL
     private var previewOriginals = ImageCompressionOriginals()
 
-    init(preferencesDefaults: UserDefaults = .standard) {
+    init(
+        preferencesDefaults: UserDefaults = .standard,
+        scanImage: @escaping @Sendable (URL) -> ImageScanResult = LubanInputScanner.scan,
+        outputBaseDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Desktop/DevKitOutput", isDirectory: true)
+    ) {
         self.preferencesDefaults = preferencesDefaults
+        self.scanImage = scanImage
+        self.outputBaseDirectory = outputBaseDirectory
         let storedValue = preferencesDefaults.object(forKey: Self.minimumCompressionSizeKey) as? Int
         self.minimumCompressionSizeKB = Self.normalizedMinimumCompressionSizeKB(
             storedValue ?? Self.defaultMinimumCompressionSizeKB
@@ -132,7 +142,7 @@ final class LubanCompressionModel {
             return
         }
 
-        var knownRoots = Set(selectedURLs.map(\.path))
+        var knownRoots = Set((selectedURLs + pendingScanURLs).map(\.path))
         let acceptedURLs = validURLs.filter { knownRoots.insert($0.path).inserted }
         guard !acceptedURLs.isEmpty else { return }
 
@@ -144,16 +154,19 @@ final class LubanCompressionModel {
         alertMessage = nil
 
         let selectionToken = activeSelectionToken
-        let roots = acceptedURLs
+        pendingScanURLs.append(contentsOf: acceptedURLs)
+        let roots = pendingScanURLs
+        let scanImage = scanImage
         scanTask = Task.detached(priority: .userInitiated) {
-            roots.map { LubanInputScanner.scan($0) }
+            roots.map(scanImage)
         }
 
         guard let scanTask = scanTask else { return }
         Task { @MainActor [weak self, selectionToken, scanTask] in
-            guard let self, self.activeSelectionToken == selectionToken, !scanTask.isCancelled else { return }
             let results = await scanTask.value
+            guard let self, self.activeSelectionToken == selectionToken, !scanTask.isCancelled else { return }
             self.scanTask = nil
+            self.pendingScanURLs = []
             self.isScanning = false
 
             var knownPaths = Set(self.imageItems.map(\.id.path))
@@ -191,8 +204,9 @@ final class LubanCompressionModel {
         }
     }
 
-    func run() {
-        guard canRun else { return }
+    @discardableResult
+    func run() -> Task<Void, Never>? {
+        guard canRun else { return nil }
         // 先取待压缩快照，再把状态切到 .working；循环内以 imageItems 的当前状态为准（中途停止后跳过）
         let pendingItems = imageItems.filter {
             if case .waiting = $0.status { return true }
@@ -208,9 +222,9 @@ final class LubanCompressionModel {
             outputDirectoryURL = nil
         } else {
             // 非替换模式统一输出到 ~/Desktop/DevKitOutput/<功能名>_<时间戳>/
-            outputDir = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Desktop/DevKitOutput", isDirectory: true)
-                .appendingPathComponent("Luban_\(timestamp)", isDirectory: true)
+            outputDir = outputBaseDirectory.appendingPathComponent(
+                "Luban_\(timestamp)_\(UUID().uuidString.prefix(8))", isDirectory: true
+            )
             outputDirectoryURL = outputDir
         }
 
@@ -226,6 +240,9 @@ final class LubanCompressionModel {
         }
 
         let minimumCompressionBytes = Int64(minimumCompressionSizeKB) * 1024
+        let destinations = outputDir.map {
+            Self.outputDestinations(for: pendingItems, in: $0, minimumBytes: minimumCompressionBytes)
+        } ?? [:]
         compressionTask = Task { @MainActor [weak self] in
             guard let self else { return }
             for item in pendingItems {
@@ -233,23 +250,29 @@ final class LubanCompressionModel {
                 guard let current = self.imageItems.first(where: { $0.id == item.id }),
                       case .working = current.status else { continue }
 
-                // 最低压缩大小：低于阈值直接跳过
+                // 非替换模式也保留跳过图片的原始字节和扩展名。
                 if item.byteCount < minimumCompressionBytes {
-                    let skippedDestination: String?
-                    if shouldReplace {
-                        skippedDestination = item.id.path
-                    } else if let outputDir {
-                        let target = outputDir.appendingPathComponent(item.relativePath)
-                            .deletingPathExtension().appendingPathExtension("jpg")
-                        skippedDestination = target.path
-                    } else {
-                        skippedDestination = nil
-                    }
-                    self.updateItem(item.id) { updated in
-                        updated.status = .skipped
-                        updated.compressedByteCount = item.byteCount
-                        updated.compressionPercentage = 0
-                        updated.destinationPath = skippedDestination
+                    do {
+                        var destination = item.id
+                        if !shouldReplace, let target = destinations[item.id] {
+                            destination = try await Task.detached(priority: .userInitiated) {
+                                try FileManager.default.createDirectory(
+                                    at: target.deletingLastPathComponent(), withIntermediateDirectories: true
+                                )
+                                try FileManager.default.copyItem(at: item.id, to: target)
+                                return target
+                            }.value
+                        }
+                        guard !Task.isCancelled else { break }
+                        self.updateItem(item.id) { updated in
+                            updated.status = .skipped
+                            updated.compressedByteCount = item.byteCount
+                            updated.compressionPercentage = 0
+                            updated.destinationPath = destination.path
+                        }
+                    } catch {
+                        guard !Task.isCancelled else { break }
+                        self.updateItem(item.id) { $0.status = .failed(error.localizedDescription) }
                     }
                     continue
                 }
@@ -269,11 +292,20 @@ final class LubanCompressionModel {
                         _ = try FileManager.default.replaceItemAt(item.id, withItemAt: compressed)
                         outputURL = item.id
                     } else {
-                        guard let outputDir else { break }
-                        let relative = item.relativePath
-                        let target = outputDir.appendingPathComponent(relative)
-                            .deletingPathExtension().appendingPathExtension("jpg")
-                        outputURL = try await Luban.compress(item.id, to: target)
+                        guard let target = destinations[item.id] else { break }
+                        let temporaryDirectory = FileManager.default.temporaryDirectory
+                            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+                        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+                        let compressed = try await Luban.compress(
+                            item.id, to: temporaryDirectory.appendingPathComponent("result.jpg")
+                        )
+                        try Task.checkCancellation()
+                        try FileManager.default.createDirectory(
+                            at: target.deletingLastPathComponent(), withIntermediateDirectories: true
+                        )
+                        // Luban may overwrite its target; publish only after encoding to a private file.
+                        try FileManager.default.moveItem(at: compressed, to: target)
+                        outputURL = target
                     }
 
                     guard !Task.isCancelled else { break }
@@ -317,12 +349,15 @@ final class LubanCompressionModel {
                 self.operationStatusSystemImage = "checkmark.circle"
             }
         }
+        return compressionTask
     }
 
     func stop() {
         if isScanning {
+            activeSelectionToken = UUID()
             scanTask?.cancel()
             scanTask = nil
+            pendingScanURLs = []
             isScanning = false
             operationStatus = "已停止"
             operationStatusSystemImage = "stop.circle"
@@ -345,6 +380,8 @@ final class LubanCompressionModel {
         guard !isRunning, !isScanning else { return }
         scanTask?.cancel()
         scanTask = nil
+        activeSelectionToken = UUID()
+        pendingScanURLs = []
         selectedURLs = []
         imageItems = []
         previewOriginals = ImageCompressionOriginals()
@@ -377,13 +414,40 @@ final class LubanCompressionModel {
         }
     }
 
+    private static func outputDestinations(
+        for items: [LubanImageItem], in directory: URL, minimumBytes: Int64
+    ) -> [URL: URL] {
+        var destinations: [URL: URL] = [:]
+        var usedPaths = Set<String>()
+        // Reserve unchanged files first so an encoded JPEG cannot take a skipped JPG's name.
+        let ordered = items.filter { $0.byteCount < minimumBytes }
+            + items.filter { $0.byteCount >= minimumBytes }
+        for item in ordered {
+            let original = directory.appendingPathComponent(item.relativePath)
+            let preferred = item.byteCount < minimumBytes ? original
+                : original.deletingPathExtension().appendingPathExtension("jpg")
+            var candidate = preferred
+            var suffix = 2
+            while !usedPaths.insert(candidate.path.precomposedStringWithCanonicalMapping.lowercased()).inserted {
+                candidate = preferred.deletingLastPathComponent().appendingPathComponent(
+                    "\(preferred.deletingPathExtension().lastPathComponent)_\(suffix).\(preferred.pathExtension)"
+                )
+                suffix += 1
+            }
+            destinations[item.id] = candidate
+        }
+        return destinations
+    }
+
     private func relativePath(for imageURL: URL, inputURL: URL) -> String {
         if LubanInputScanner.isDirectory(inputURL) {
-            let relative = imageURL.path.replacingOccurrences(
-                of: inputURL.standardizedFileURL.path + "/",
-                with: ""
-            )
-            return relative == imageURL.path ? imageURL.lastPathComponent : relative
+            let paths = [
+                (imageURL.standardizedFileURL.path, inputURL.standardizedFileURL.path),
+                (imageURL.resolvingSymlinksInPath().path, inputURL.resolvingSymlinksInPath().path)
+            ]
+            for (image, root) in paths where image.hasPrefix(root + "/") {
+                return String(image.dropFirst(root.count + 1))
+            }
         }
         return imageURL.lastPathComponent
     }

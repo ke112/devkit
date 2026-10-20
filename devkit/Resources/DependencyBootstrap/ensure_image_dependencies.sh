@@ -8,10 +8,13 @@
 #
 # 说明：
 #   - WebP 转换依赖 cwebp（brew install webp）；
-#   - TinyPNG 依赖 python3 的 requests/urllib3；
+#   - TinyPNG 的固定版本 Python 依赖仅安装到 DevKit 独立虚拟环境；
 #   - 依赖已就绪时本脚本只做检测，秒级返回，不会触发网络请求。
 
 set -u
+
+SCRIPT_DIRECTORY="$(cd "$(dirname "$0")" && pwd)"
+PYTHON_RUNTIME="$SCRIPT_DIRECTORY/image_python_runtime.py"
 
 check_only=0
 case "${1:-}" in
@@ -74,26 +77,12 @@ ensure_cwebp() {
     return 1
 }
 
-python_deps_ready() {
-    python3 -c "import requests, urllib3" >/dev/null 2>&1
-}
-
 ensure_python_deps() {
-    if python_deps_ready; then
-        return 0
-    fi
     if [ "$check_only" -eq 1 ]; then
-        return 1
+        python3 "$PYTHON_RUNTIME" --check >/dev/null 2>&1
+    else
+        python3 "$PYTHON_RUNTIME" >/dev/null
     fi
-    echo "[deps] 正在安装 python3 依赖 requests/urllib3 ..."
-    python3 -m pip install --quiet requests urllib3 >/dev/null 2>&1 \
-        || python3 -m pip install --quiet --user requests urllib3 >/dev/null 2>&1
-    if python_deps_ready; then
-        echo "[deps] python3 依赖已就绪"
-        return 0
-    fi
-    echo "[deps] python3 依赖安装失败，TinyPNG 压缩时可能需要手动执行: python3 -m pip install requests urllib3"
-    return 1
 }
 
 failures=0

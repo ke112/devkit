@@ -1739,20 +1739,16 @@ struct DevKitTests {
 
     @Test func streamingProcessCancellationTerminatesChildProcess() async throws {
         let cancellation = StreamingProcessCancellation()
-        let task = Task {
-            try await StreamingProcess.run(
-                executableURL: URL(fileURLWithPath: "/bin/sleep"),
-                arguments: ["5"],
-                currentDirectoryURL: FileManager.default.temporaryDirectory,
-                cancellation: cancellation,
-                onOutput: { _ in }
-            )
+        let result = try await StreamingProcess.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/yes"),
+            arguments: ["ready"],
+            currentDirectoryURL: FileManager.default.temporaryDirectory,
+            cancellation: cancellation
+        ) { _ in
+            // Cancel only after the child is running, without a timing assumption.
+            cancellation.cancel()
         }
-
-        try await Task.sleep(nanoseconds: 100_000_000)
-        cancellation.cancel()
-        let result = try await task.value
-
+        #expect(!result.output.isEmpty)
         #expect(result.terminationStatus != 0)
     }
 

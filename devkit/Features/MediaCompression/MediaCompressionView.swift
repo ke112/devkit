@@ -11,6 +11,7 @@ struct MediaCompressionView: View {
     @State private var outputDirectory: URL? = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Desktop/DevKitOutput", isDirectory: true)
     @State private var isRunning = false
+    @State private var isStopping = false
     @State private var isScanning = false
     @State private var isDropTargeted = false
     @State private var isImporterPresented = false
@@ -200,9 +201,10 @@ struct MediaCompressionView: View {
                 Button {
                     stop()
                 } label: {
-                    Label("停止", systemImage: "stop.circle")
+                    Label(isStopping ? "正在停止" : "停止", systemImage: "stop.circle")
                 }
                 .tint(.red)
+                .disabled(isStopping)
             }
             Spacer()
         }
@@ -322,6 +324,19 @@ struct MediaCompressionView: View {
         message = "输出目录：\(config.batchDirectory.path)"
         resetVideoResults()
         worker = Task { [videoCompressor] in
+            defer {
+                isRunning = false
+                isStopping = false
+                worker = nil
+                if Task.isCancelled {
+                    videoTasks = videoTasks.map { item in
+                        var item = item
+                        if item.state == .processing { item.state = .pending }
+                        return item
+                    }
+                    message = "已停止。"
+                }
+            }
             for (index, item) in inputs.enumerated() {
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
@@ -329,11 +344,16 @@ struct MediaCompressionView: View {
                     message = "正在处理 \(index + 1)/\(inputs.count)：\(item.sourceURL.lastPathComponent)"
                 }
                 do {
-                    let result = try await Task.detached(priority: .userInitiated) {
+                    let exportTask = Task.detached(priority: .userInitiated) {
                         try await videoCompressor.compressVideo(
                             at: item.sourceURL, relativeDir: item.relativeDir, config: config, progressHandler: { _ in }
                         )
-                    }.value
+                    }
+                    let result = try await withTaskCancellationHandler {
+                        try await exportTask.value
+                    } onCancel: {
+                        exportTask.cancel()
+                    }
                     guard !Task.isCancelled else { return }
                     await MainActor.run {
                         videoTasks[index].destinationURL = result.destination
@@ -343,6 +363,7 @@ struct MediaCompressionView: View {
                         videoTasks[index].state = result.isCopiedFallback ? .copiedFallback : .success
                     }
                 } catch {
+                    guard !Task.isCancelled else { return }
                     await MainActor.run { videoTasks[index].state = .failed(error.localizedDescription) }
                 }
                 await MainActor.run { progress = Double(index + 1) / Double(inputs.count) }
@@ -354,8 +375,6 @@ struct MediaCompressionView: View {
     private func finish() async {
         await MainActor.run {
             guard !Task.isCancelled else { return }
-            isRunning = false
-            worker = nil
             let states = videoTasks.map(\.state)
             let success = states.filter { $0 == .success }.count
             let fallback = states.filter { $0 == .copiedFallback }.count
@@ -395,15 +414,10 @@ struct MediaCompressionView: View {
     }
 
     private func stop() {
+        guard isRunning, !isStopping else { return }
+        isStopping = true
         worker?.cancel()
-        worker = nil
-        isRunning = false
-        videoTasks = videoTasks.map { item in
-            var item = item
-            if case .processing = item.state { item.state = .pending }
-            return item
-        }
-        message = "已停止。"
+        message = "正在停止..."
     }
 }
 

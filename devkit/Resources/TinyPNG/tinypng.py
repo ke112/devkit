@@ -3,13 +3,15 @@
 TinyPNG 批量压缩工具
 用法: python3 tinypng.py <文件或目录路径...>
 输出: 非替换模式默认写入输入同级时间戳文件夹；DevKit 传入 --output-dir 时统一写入该目录下 TinyPNG_<时间戳>；单文件输入平铺，文件夹输入保持目录结构
-失败的图片会记录到 JSON 文件并自动重试直到全部成功
+失败的图片会记录到 JSON 文件；网络错误自动重试，本地读写错误终止该图片的处理
 
 大概比例:
 Pass rate  : Round 1=> 78%  Round 2=> 74%  Round 3=> 83%  Round 4=> 100%  Final=> 100%
 Image size : before 168.87MB  after 21.15MB  saved 147.72MB (87.5%)
 Total cost : 8m57s
 """
+
+from __future__ import annotations
 
 import sys
 import os
@@ -19,19 +21,36 @@ import signal
 import time
 import json
 import shutil
+import tempfile
 import threading
 from datetime import datetime
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+def prepare_runtime():
+    # Bundled scripts must not create __pycache__ files inside the signed app.
+    sys.dont_write_bytecode = True
+    runtime_directory = Path(__file__).resolve().parent
+    if not (runtime_directory / "image_python_runtime.py").is_file():
+        runtime_directory = runtime_directory.parent / "DependencyBootstrap"
+    sys.path.insert(0, str(runtime_directory))
+    from image_python_runtime import ensure_environment
+    python = ensure_environment()
+    if Path(sys.prefix).resolve() != python.parent.parent.resolve():
+        # exec preserves the PID watched and cancelled by DevKit.
+        os.execv(str(python), [str(python), "-I", "-B", "-u", str(Path(__file__).resolve()), *sys.argv[1:]])
+
+
+if __name__ == "__main__" and not any(argument in ("-h", "--help") for argument in sys.argv[1:]):
+    prepare_runtime()
+
+
 try:
     import requests
     from urllib3.util.retry import Retry
 except ImportError:
-    print("缺少 requests/urllib3 库，正在安装...")
-    os.system(f"{sys.executable} -m pip install requests urllib3 -q")
-    import requests
-    from urllib3.util.retry import Retry
+    requests = None
+    Retry = None
 
 # 支持的图片格式
 SUPPORTED_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
@@ -159,6 +178,24 @@ def create_session() -> requests.Session:
     return session
 
 
+def write_image_atomically(destination: Path, content: bytes):
+    """完整写入同一文件系统的临时文件后替换，失败时不截断原图。"""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix=".devkit-tinypng-", dir=destination.parent, delete=False) as output:
+            temporary = Path(output.name)
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        if destination.exists():
+            shutil.copymode(destination, temporary)
+        os.replace(temporary, destination)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def compress_image(src_path: Path, dst_path: Path, session: requests.Session, limiter: RateLimiter) -> dict:
     """
     压缩单张图片
@@ -167,12 +204,19 @@ def compress_image(src_path: Path, dst_path: Path, session: requests.Session, li
     result = {
         "src": str(src_path),
         "dst": str(dst_path),
-        "before": src_path.stat().st_size,
+        "before": 0,
         "after": 0,
         "ok": False,
         "error": "",
         "elapsed": 0.0,
+        "retryable": True,
     }
+
+    try:
+        result["before"] = src_path.stat().st_size
+    except OSError as error:
+        result.update(error=f"读取图片失败: {error}", retryable=False)
+        return result
 
     started_at = time.time()
     max_retries = 3
@@ -216,9 +260,7 @@ def compress_image(src_path: Path, dst_path: Path, session: requests.Session, li
                     continue
                 return result
 
-            dst_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(dst_path, "wb") as f:
-                f.write(dl_resp.content)
+            write_image_atomically(dst_path, dl_resp.content)
 
             result["after"] = dst_path.stat().st_size
             result["ok"] = True
@@ -232,6 +274,10 @@ def compress_image(src_path: Path, dst_path: Path, session: requests.Session, li
             limiter.on_conn_error(cooldown=3.0 + random.uniform(0, 2))
             if attempt < max_retries - 1:
                 continue
+        except OSError as error:
+            result["error"] = f"读写图片失败: {error}"
+            result["retryable"] = False
+            return result
 
     return result
 
@@ -337,7 +383,8 @@ def run_batch(tasks: list[tuple[Path, Path]], total_all: int, done_offset: int, 
                 succeeded.append(r)
             else:
                 total_after += r["before"]
-                status = f"❌ {r['error'][:60]}  ↻ 稍后自动重试"
+                retry_status = "↻ 稍后自动重试" if r.get("retryable", True) else "已终止，不再重试"
+                status = f"❌ {r['error'][:60]}  {retry_status}"
                 failed.append(r)
 
             name = Path(r["src"]).name
@@ -531,7 +578,9 @@ def main():
     grand_after += batch_after
     all_success_count += len(succeeded)
 
-    save_failed_list(fail_file, failed)
+    terminal_failed = [result for result in failed if not result.get("retryable", True)]
+    failed = [result for result in failed if result.get("retryable", True)]
+    save_failed_list(fail_file, terminal_failed + failed)
 
     retry_round = 1
     while failed:
@@ -545,20 +594,22 @@ def main():
         grand_after -= prev_fail_size
 
         succeeded_retry, failed, batch_before_retry, batch_after_retry = run_batch(
-            retry_tasks, len(tasks), all_success_count, start_time, session, limiter
+            retry_tasks, len(tasks), all_success_count + len(terminal_failed), start_time, session, limiter
         )
+        terminal_failed.extend(result for result in failed if not result.get("retryable", True))
+        failed = [result for result in failed if result.get("retryable", True)]
         grand_after += batch_after_retry
         all_success_count += len(succeeded_retry)
         print(f"  第 {retry_round} 轮完成，总用时: {format_elapsed(time.time() - start_time)}")
 
-        save_failed_list(fail_file, failed)
+        save_failed_list(fail_file, terminal_failed + failed)
 
     saved_total = grand_before - grand_after
     pct_total = (saved_total / grand_before * 100) if grand_before > 0 else 0
 
     print(f"\n{'=' * 60}")
-    print(f"  全部压缩完成!")
-    print(f"  总数: {len(tasks)}  全部成功 ✅")
+    print("  压缩结束!" if terminal_failed else "  全部压缩完成!")
+    print(f"  总数: {len(tasks)}  成功: {all_success_count}  失败: {len(terminal_failed)}")
     if retry_round > 1:
         print(f"  共经过 {retry_round} 轮 (含 {retry_round - 1} 轮重试)")
     print(f"  压缩前: {format_size(grand_before)}")
@@ -567,5 +618,11 @@ def main():
     print(f"  总用时: {format_elapsed(time.time() - start_time)}")
     print(f"  输出目录: {report_dir}")
     print(f"{'=' * 60}")
+    if terminal_failed:
+        sys.exit(1)
+
+
+
+
 if __name__ == "__main__":
     main()
