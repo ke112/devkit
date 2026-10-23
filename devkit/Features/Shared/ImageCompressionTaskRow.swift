@@ -25,6 +25,7 @@ struct ImageCompressionTaskRow: View {
     var compressionControlsDisabled = false
     var onSetCompressionEnabled: ((Bool) -> Void)? = nil
     var onResetResult: (() -> Void)? = nil
+    var operationVerb = "压缩"
 
     @State private var showMissingFile = false
 
@@ -106,19 +107,19 @@ struct ImageCompressionTaskRow: View {
                 Button("Reset", action: onResetResult)
                     .buttonStyle(.borderless)
                     .disabled(compressionControlsDisabled)
-                    .help("放弃压缩结果，恢复原图并跳过压缩")
+                    .help("放弃\(operationVerb)结果，恢复原图并跳过\(operationVerb)")
             }
 
             if let compressionEnabled {
-                Toggle("参与压缩", isOn: Binding(
+                Toggle("参与\(operationVerb)", isOn: Binding(
                     get: { compressionEnabled },
                     set: { onSetCompressionEnabled?($0) }
                 ))
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .disabled(compressionControlsDisabled)
-                .accessibilityLabel("\(title) 参与压缩")
-                .help("开启参与压缩；关闭后保留原图并移到已跳过组")
+                .accessibilityLabel("\(title) 参与\(operationVerb)")
+                .help("开启参与\(operationVerb)；关闭后保留原图并移到已跳过组")
             }
         }
         .padding(.vertical, 4)

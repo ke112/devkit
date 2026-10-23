@@ -19,6 +19,7 @@ struct ImageTaskDisplayModel: Identifiable, Equatable {
     var compressionEnabled: Bool? = nil
     var compressionToggleAllowed = true
     var canReset = false
+    var operationVerb = "压缩"
 
     var stateStyle: ImageCompressionTaskRowStyle {
         .label(stateTitle, stateColor)
@@ -52,7 +53,7 @@ extension ImageTaskDisplayModel {
             originalPreviewURL: item.previewOriginalURL ?? item.id,
             resultLabel: resultLabel,
             title: item.relativePath,
-            thumbnailURL: item.id,
+            thumbnailURL: item.previewOriginalURL ?? item.id,
             sizeSummary: Self.sizeSummary(for: item, resultLabel: resultLabel),
             elapsedText: CompressionElapsedFormatter.seconds(item.elapsedSeconds),
             destinationPath: item.destinationPath,
@@ -330,6 +331,7 @@ struct ImageCompressionPageLayout<Extras: View>: View {
                 .help("小于此大小的图片会跳过，0 表示全部处理")
 
                 extras
+                    .disabled(isBusy)
 
                 Spacer()
 
@@ -431,7 +433,8 @@ struct ImageCompressionPageLayout<Extras: View>: View {
             compressionEnabled: task.compressionEnabled,
             compressionControlsDisabled: isBusy || !task.compressionToggleAllowed,
             onSetCompressionEnabled: { onSetCompressionEnabled?(task.id, $0) },
-            onResetResult: task.canReset ? { onResetResult?(task.id) } : nil
+            onResetResult: task.canReset ? { onResetResult?(task.id) } : nil,
+            operationVerb: task.operationVerb
         )
     }
 

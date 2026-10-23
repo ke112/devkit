@@ -291,6 +291,10 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("paths", nargs="*", help="图片文件或文件夹路径，可传多个")
+    parser.add_argument(
+        "--selection-file", default="",
+        help="可选 JSON 对象：图片绝对路径映射到是否转换；仅处理清单中的图片，手动开启可覆盖最低大小",
+    )
     parser.add_argument("--quality", type=int, default=80, help="WebP 有损质量 1-100，建议 75-85")
     parser.add_argument("--min-size-kb", type=int, default=100, help="小于此大小（KB）的图片跳过转换")
     parser.add_argument("--max-side", type=int, default=0, help="最长边超过该像素时按比例缩小，0 不限制")
@@ -313,6 +317,17 @@ def main():
     quality = min(max(1, args.quality), 100)
     max_side = max(0, args.max_side)
     minimum_bytes = max(0, args.min_size_kb) * 1024
+    selection = None
+    if args.selection_file:
+        try:
+            values = json.loads(Path(args.selection_file).read_text(encoding="utf-8"))
+            if not isinstance(values, dict) or any(
+                not isinstance(key, str) or not isinstance(value, bool) for key, value in values.items()
+            ):
+                raise ValueError("清单必须是图片路径到布尔值的映射")
+            selection = {Path(key).resolve(): value for key, value in values.items()}
+        except (OSError, ValueError) as error:
+            parser.error(f"无法读取转换清单: {error}")
 
     if not cwebp_available():
         print("未找到 cwebp 工具，请先安装：brew install webp")
@@ -333,7 +348,8 @@ def main():
     for root in input_roots:
         unique_images = [
             image for image in collect_images(root)
-            if image not in seen_paths and not seen_paths.add(image)
+            if (selection is None or image.resolve() in selection)
+            and image not in seen_paths and not seen_paths.add(image)
         ]
         if unique_images:
             root_images.append((root, unique_images))
@@ -399,7 +415,7 @@ def main():
         for image in images:
             if image.suffix.lower() == ".webp":
                 already_webp.append((root, image))
-            elif image.stat().st_size < minimum_bytes:
+            elif (not selection[image.resolve()] if selection is not None else image.stat().st_size < minimum_bytes):
                 too_small.append((root, image))
             else:
                 tasks.append((image, destination(root, image)))

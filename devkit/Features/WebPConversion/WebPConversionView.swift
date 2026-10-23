@@ -24,7 +24,7 @@ struct WebPConversionView: View {
             minimumCompressionSizeKB: $model.minimumCompressionSizeKB,
             replaceOriginals: $model.replaceOriginals,
             isDropTargeted: $isDropTargeted,
-            isBusy: model.isRunning || model.isScanning,
+            isBusy: model.isRunning || model.isScanning || model.isRestoring,
             isStopping: model.isStopping,
             canRun: model.canRun,
             selectedCount: model.imageItems.count,
@@ -39,6 +39,13 @@ struct WebPConversionView: View {
             completionPercentage: model.completionPercentage,
             statsText: statsText,
             tasks: taskDisplayModels,
+            taskGroups: model.displayGroups,
+            onSetCompressionEnabled: { id, enabled in
+                Task { await model.setCompressionEnabled(enabled, for: id) }
+            },
+            onResetResult: { id in
+                Task { await model.resetResult(for: id) }
+            },
             onDrop: { urls in
                 guard !urls.isEmpty else { return false }
                 return model.select(urls: urls)
@@ -104,7 +111,7 @@ struct WebPConversionView: View {
             }
         }
         .alert(
-            "无法选择输入",
+            "WebP 图片转换",
             isPresented: Binding(
                 get: { model.alertMessage != nil },
                 set: { if !$0 { model.alertMessage = nil } }
@@ -165,11 +172,20 @@ struct WebPImageItem: Identifiable, Equatable {
     var elapsedSeconds: Double? = nil
     var destinationPath: String? = nil
     var previewOriginalURL: URL? = nil
+    var compressionOverride: Bool? = nil
+    var manualSkipOrder: Int? = nil
+    var resultReplacedOriginal = false
 }
 
-extension WebPImageItem: ImageCompressionTaskItem {
-    var resultByteCount: Int64? { convertedByteCount }
-    var resultPercentage: Double? { conversionPercentage }
+extension WebPImageItem: SelectableImageCompressionTaskItem {
+    var resultByteCount: Int64? {
+        get { convertedByteCount }
+        set { convertedByteCount = newValue }
+    }
+    var resultPercentage: Double? {
+        get { conversionPercentage }
+        set { conversionPercentage = newValue }
+    }
 }
 
 enum WebPInputScanner {
@@ -192,7 +208,7 @@ enum WebPInputScanner {
 
 @MainActor
 @Observable
-final class WebPConversionModel {
+final class WebPConversionModel: ImageCompressionSelectionModel {
     static let defaultQuality = 80
     static let defaultMinimumCompressionSizeKB = 0
     static let defaultMaximumSideLength = 0
@@ -239,6 +255,8 @@ final class WebPConversionModel {
     var isScanning = false
     var isRunning = false
     var isStopping = false
+    var isRestoring = false
+    var nextManualSkipOrder = 0
     var output = ""
     var operationStatus = "请选择图片或文件夹"
     var operationStatusSystemImage = "photo.on.rectangle"
@@ -267,9 +285,24 @@ final class WebPConversionModel {
 
     var canRun: Bool {
         !selectedURLs.isEmpty
-            && (selectionSummary?.imageCount ?? 0) > 0
+            && imageItems.contains(where: { isCompressionEnabled(for: $0) && $0.status != .success })
             && !isScanning
             && !isRunning
+            && !isRestoring
+    }
+
+    var operationVerb: String { "转换" }
+
+    func supportsProcessing(_ item: WebPImageItem) -> Bool { !item.isWebPSource }
+
+    func inputURLsForPendingItems() -> [URL] {
+        let pendingPaths = imageItems.filter { $0.status != .success }.map {
+            $0.id.resolvingSymlinksInPath().standardizedFileURL.pathComponents
+        }
+        return selectedURLs.filter { root in
+            let components = root.resolvingSymlinksInPath().standardizedFileURL.pathComponents
+            return pendingPaths.contains { $0.starts(with: components) }
+        }
     }
 
     var isError: Bool {
@@ -306,18 +339,18 @@ final class WebPConversionModel {
 
     var conversionStats: ImageCompressionSizeStats? {
         guard !imageItems.isEmpty,
-              imageItems.allSatisfy({ $0.convertedByteCount != nil }) else {
+              imageItems.allSatisfy({ $0.status == .skipped || $0.convertedByteCount != nil }) else {
             return nil
         }
         return ImageCompressionSizeStats(
             beforeBytes: totalOriginalByteCount,
-            afterBytes: imageItems.reduce(0) { $0 + ($1.convertedByteCount ?? 0) }
+            afterBytes: imageItems.reduce(0) { $0 + ($1.status == .skipped ? $1.byteCount : ($1.convertedByteCount ?? 0)) }
         )
     }
 
     @discardableResult
     func select(urls: [URL]) -> Bool {
-        guard !isRunning else { return false }
+        guard !isRunning, !isRestoring else { return false }
         let standardizedURLs = urls.map(\.standardizedFileURL)
         let validURLs = standardizedURLs.filter(WebPInputScanner.accepts(_:))
         guard !validURLs.isEmpty else {
@@ -410,33 +443,45 @@ final class WebPConversionModel {
             return
         }
 
-        let inputURLs = selectedURLs
+        let selection = Dictionary(uniqueKeysWithValues: imageItems.filter { $0.status != .success }.map {
+            ($0.id.path, isCompressionEnabled(for: $0))
+        })
+        // A completed single-file input may have been deleted in replacement mode.
+        let inputURLs = inputURLsForPendingItems()
+        guard let firstInputURL = inputURLs.first else {
+            showError("无法匹配待转换图片的输入路径，请重新选择图片。")
+            return
+        }
         let hasSecurityScopes = inputURLs.map { $0.startAccessingSecurityScopedResource() }
         isRunning = true
         isStopping = false
         let cancellation = StreamingProcessCancellation()
         processCancellation = cancellation
         imageItems = imageItems.map { item in
-            guard case .waiting = item.status else { return item }
+            guard isCompressionEnabled(for: item), item.status != .success else { return item }
             var updated = item
             updated.status = .working
+            updated.clearResultMetrics()
             return updated
         }
         output = ""
+        outputEventBuffer = ""
         outputDirectoryURL = nil
         operationStatus = "正在转换"
         operationStatusSystemImage = "arrow.triangle.2.circlepath"
         alertMessage = nil
         let shouldReplaceOriginals = replaceOriginals
         let selectedQuality = quality
-        let minimumCompressionSizeKB = minimumCompressionSizeKB
         let maximumSideLength = maximumSideLength
         // 非替换模式统一输出到 ~/Desktop/DevKitOutput/<功能名>_<时间戳>/
         let unifiedOutputBase = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Desktop/DevKitOutput", isDirectory: true)
 
         Task { [weak self, inputURLs, scriptURL, hasSecurityScopes, shouldReplaceOriginals, cancellation, unifiedOutputBase] in
+            let manifestURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("WebP-selection-\(UUID().uuidString).json")
             defer {
+                try? FileManager.default.removeItem(at: manifestURL)
                 for (index, url) in inputURLs.enumerated()
                 where index < hasSecurityScopes.count && hasSecurityScopes[index] {
                     url.stopAccessingSecurityScopedResource()
@@ -444,9 +489,9 @@ final class WebPConversionModel {
             }
 
             do {
+                try JSONEncoder().encode(selection).write(to: manifestURL, options: .atomic)
                 if shouldReplaceOriginals, let self {
-                    // The script scans every selected root again, including previously completed files.
-                    for item in self.imageItems where item.status != .skipped {
+                    for item in self.imageItems where item.status == .working && item.previewOriginalURL == nil {
                         guard !cancellation.isCancelled else { throw CancellationError() }
                         let originalURL = try await self.previewOriginals.capture(at: item.id)
                         guard let index = self.imageItems.firstIndex(where: { $0.id == item.id }) else { continue }
@@ -463,7 +508,7 @@ final class WebPConversionModel {
                 ]
                 arguments.append(contentsOf: inputURLs.map(\.path))
                 arguments.append(contentsOf: ["--quality", String(selectedQuality)])
-                arguments.append(contentsOf: ["--min-size-kb", String(minimumCompressionSizeKB)])
+                arguments.append(contentsOf: ["--selection-file", manifestURL.path])
                 if maximumSideLength > 0 {
                     arguments.append(contentsOf: ["--max-side", String(maximumSideLength)])
                 }
@@ -476,7 +521,7 @@ final class WebPConversionModel {
                 let result = try await StreamingProcess.run(
                     executableURL: URL(fileURLWithPath: "/bin/zsh"),
                     arguments: arguments,
-                    currentDirectoryURL: inputURLs[0].deletingLastPathComponent(),
+                    currentDirectoryURL: firstInputURL.deletingLastPathComponent(),
                     cancellation: cancellation,
                     environment: [
                         "DEVKIT_PARENT_PID": String(ProcessInfo.processInfo.processIdentifier)
@@ -489,7 +534,7 @@ final class WebPConversionModel {
 
                 guard let self else { return }
                 applyProcessEvents(from: result.output)
-                outputDirectoryURL = Self.outputDirectory(from: result.output)
+                outputDirectoryURL = shouldReplaceOriginals ? nil : Self.outputDirectory(from: result.output)
                 isRunning = false
                 processCancellation = nil
                 let wasStopping = isStopping
@@ -500,21 +545,23 @@ final class WebPConversionModel {
                     return
                 }
                 if result.terminationStatus == 0 {
-                    finalizeSkippedItems()
                     imageItems = imageItems.map { item in
                         guard case .working = item.status else { return item }
                         var updated = item
-                        updated.status = .success
+                        updated.status = .failed("脚本未返回该图片的转换结果")
                         return updated
                     }
                     let skippedCount = imageItems.filter {
                         if case .skipped = $0.status { return true }
                         return false
                     }.count
-                    operationStatus = skippedCount > 0
-                        ? "转换完成（跳过 \(skippedCount) 张图片）"
-                        : "转换完成"
-                    operationStatusSystemImage = "checkmark.circle"
+                    let hasFailures = imageItems.contains {
+                        if case .failed = $0.status { return true }
+                        return false
+                    }
+                    operationStatus = hasFailures ? "转换结束（部分图片失败）" : (skippedCount > 0
+                        ? "转换完成（跳过 \(skippedCount) 张图片）" : "转换完成")
+                    operationStatusSystemImage = hasFailures ? "xmark.circle" : "checkmark.circle"
                 } else {
                     imageItems = imageItems.map { item in
                         guard case .working = item.status else { return item }
@@ -576,7 +623,7 @@ final class WebPConversionModel {
     }
 
     func clearSelection() {
-        guard !isRunning, !isScanning else { return }
+        guard !isRunning, !isScanning, !isRestoring else { return }
         scanWorker?.cancel()
         scanWorker = nil
         pendingScanURLs = []
@@ -585,6 +632,7 @@ final class WebPConversionModel {
         selectionSummary = nil
         imageItems = []
         previewOriginals = ImageCompressionOriginals()
+        nextManualSkipOrder = 0
         output = ""
         outputEventBuffer = ""
         outputDirectoryURL = nil
@@ -659,27 +707,6 @@ final class WebPConversionModel {
         }
     }
 
-    private func finalizeSkippedItems() {
-        // 跳过项补输出路径：替换模式 = 原文件；非替换单根输入 = 输出目录内同相对路径（多根结构由脚本分组，无法可靠推导则不显示）
-        let outputBase = outputDirectoryURL
-        let isSingleRoot = selectedURLs.count == 1
-        imageItems = imageItems.map { item in
-            guard case .skipped = item.status, item.convertedByteCount == nil else {
-                return item
-            }
-            var updated = item
-            updated.convertedByteCount = item.byteCount
-            updated.conversionPercentage = 0
-            if outputBase == nil {
-                updated.destinationPath = item.id.path
-            } else if isSingleRoot {
-                updated.destinationPath = outputBase?
-                    .appendingPathComponent(item.relativePath).path
-            }
-            return updated
-        }
-    }
-
     private var minimumCompressionSizeBytes: Int64 {
         Int64(minimumCompressionSizeKB) * 1024
     }
@@ -693,26 +720,25 @@ final class WebPConversionModel {
     }
 
     private func refreshSkippedItems() {
-        guard !imageItems.isEmpty, !isRunning, !isScanning else { return }
+        guard !imageItems.isEmpty, !isRunning, !isScanning, !isRestoring else { return }
         let minimumBytes = minimumCompressionSizeBytes
         imageItems = imageItems.map { item in
             switch item.status {
-            case .waiting, .skipped:
+            case .waiting, .skipped, .cancelled, .failed:
                 break
-            case .success, .working, .cancelled, .failed:
+            case .success, .working:
                 return item
             }
             var updated = item
-            let shouldSkip = item.isWebPSource || item.byteCount < minimumBytes
-            updated.status = shouldSkip ? .skipped : .waiting
-            updated.convertedByteCount = nil
-            updated.conversionPercentage = nil
+            updated.status = isCompressionEnabled(for: item) ? .waiting : .skipped
+            updated.clearResultMetrics()
             return updated
         }
         selectionSummary = Self.summary(for: imageItems, minimumCompressionBytes: minimumBytes)
     }
 
     private func appendProcessOutput(_ chunk: String) {
+        guard isRunning else { return }
         output.append(chunk)
         outputEventBuffer.append(chunk)
 
@@ -740,9 +766,12 @@ final class WebPConversionModel {
               let event = try? JSONDecoder().decode(ImageCompressionProcessEvent.self, from: data) else {
             return
         }
+        applyProcessEvent(event)
+    }
 
-        let sourceURL = URL(fileURLWithPath: event.src).standardizedFileURL
-        guard let index = imageItems.firstIndex(where: { $0.id.path == sourceURL.path }) else {
+    func applyProcessEvent(_ event: ImageCompressionProcessEvent) {
+        let sourceURL = URL(fileURLWithPath: event.src).resolvingSymlinksInPath()
+        guard let index = imageItems.firstIndex(where: { $0.id.resolvingSymlinksInPath() == sourceURL }) else {
             return
         }
 
@@ -753,6 +782,7 @@ final class WebPConversionModel {
         item.elapsedSeconds = event.elapsed
         if event.ok {
             item.status = .success
+            item.resultReplacedOriginal = replaceOriginals
             item.convertedByteCount = event.after
             item.conversionPercentage = ImageCompressionSizeStats(
                 beforeBytes: event.before,
@@ -760,6 +790,10 @@ final class WebPConversionModel {
             ).savedPercentage
         } else if event.skipped == true {
             item.status = .skipped
+            // Only attempted conversions become explicit exclusions; size-based skips still follow the threshold.
+            if isCompressionEnabled(for: item) {
+                item.compressionOverride = false
+            }
             item.convertedByteCount = event.before
             item.conversionPercentage = 0
         } else {

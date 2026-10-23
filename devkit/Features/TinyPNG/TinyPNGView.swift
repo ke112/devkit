@@ -1,5 +1,4 @@
 import AppKit
-import Darwin
 import Observation
 import SwiftUI
 import UniformTypeIdentifiers
@@ -157,11 +156,18 @@ struct TinyPNGImageItem: Identifiable, Equatable {
     /// nil follows the size threshold; an explicit choice survives threshold changes.
     var compressionOverride: Bool? = nil
     var manualSkipOrder: Int? = nil
+    var resultReplacedOriginal = false
 }
 
-extension TinyPNGImageItem: ImageCompressionTaskItem {
-    var resultByteCount: Int64? { compressedByteCount }
-    var resultPercentage: Double? { compressionPercentage }
+extension TinyPNGImageItem: SelectableImageCompressionTaskItem {
+    var resultByteCount: Int64? {
+        get { compressedByteCount }
+        set { compressedByteCount = newValue }
+    }
+    var resultPercentage: Double? {
+        get { compressionPercentage }
+        set { compressionPercentage = newValue }
+    }
 }
 
 typealias TinyPNGScannedImage = ImageScannedImage
@@ -215,7 +221,7 @@ enum TinyPNGInputScanner {
 
 @MainActor
 @Observable
-final class TinyPNGModel {
+final class TinyPNGModel: ImageCompressionSelectionModel {
     static let defaultMinimumCompressionSizeKB = 0
     static let maximumMinimumCompressionSizeKB = Int(Int64.max / 1024)
     private static let minimumCompressionSizeKey = "tinypng.minimumCompressionSizeKB.v2"
@@ -252,7 +258,7 @@ final class TinyPNGModel {
     private var processCancellation: StreamingProcessCancellation?
     private let preferencesDefaults: UserDefaults
     private var previewOriginals = ImageCompressionOriginals()
-    private var nextManualSkipOrder = 0
+    var nextManualSkipOrder = 0
 
     init(preferencesDefaults: UserDefaults = .standard) {
         self.preferencesDefaults = preferencesDefaults
@@ -270,104 +276,8 @@ final class TinyPNGModel {
             && !isRestoring
     }
 
-    func isCompressionEnabled(for item: TinyPNGImageItem) -> Bool {
-        guard item.byteCount <= TinyPNGInputScanner.maxUploadBytes else { return false }
-        if item.status == .success { return true }
-        return item.compressionOverride ?? (item.byteCount >= minimumCompressionSizeBytes)
-    }
-
-    var displayGroups: [ImageTaskDisplayGroup] {
-        let included = imageItems.filter { $0.status != .skipped }
-        let skipped = imageItems.filter { $0.status == .skipped }.sorted {
-            // Manual exclusions retain their operation order ahead of automatic exclusions.
-            ($0.manualSkipOrder ?? Int.max) < ($1.manualSkipOrder ?? Int.max)
-        }
-        let hasPending = included.contains { $0.status != .success }
-        let hasResults = included.contains { $0.status == .success }
-        let title = hasPending ? (hasResults ? "待压缩 / 已压缩" : "待压缩") : "已压缩"
-        return [
-            ImageTaskDisplayGroup(id: "included", title: included.isEmpty ? "待压缩 / 已压缩" : title,
-                                  tasks: included.map(displayModel)),
-            ImageTaskDisplayGroup(id: "skipped", title: "已跳过压缩", tasks: skipped.map(displayModel))
-        ]
-    }
-
-    private func displayModel(for item: TinyPNGImageItem) -> ImageTaskDisplayModel {
-        var display = ImageTaskDisplayModel(item: item, resultLabel: "压缩后", verb: "压缩")
-        display.compressionEnabled = isCompressionEnabled(for: item)
-        display.compressionToggleAllowed = item.byteCount <= TinyPNGInputScanner.maxUploadBytes
-        display.canReset = item.status == .success && item.destinationPath != nil
-        return display
-    }
-
-    func setCompressionEnabled(_ enabled: Bool, for id: URL) async {
-        guard !isRunning, !isScanning, !isRestoring,
-              let index = imageItems.firstIndex(where: { $0.id == id }),
-              imageItems[index].byteCount <= TinyPNGInputScanner.maxUploadBytes else { return }
-        if !enabled, imageItems[index].status == .success {
-            await resetResult(for: id)
-            return
-        }
-        imageItems[index].compressionOverride = enabled
-        imageItems[index].status = enabled ? .waiting : .skipped
-        imageItems[index].compressedByteCount = nil
-        imageItems[index].compressionPercentage = nil
-        imageItems[index].elapsedSeconds = nil
-        if enabled {
-            imageItems[index].manualSkipOrder = nil
-        } else {
-            imageItems[index].manualSkipOrder = nextManualSkipOrder
-            nextManualSkipOrder += 1
-        }
-        operationStatus = "已选择，等待开始"
-        operationStatusSystemImage = "checkmark.circle"
-    }
-
-    func resetResult(for id: URL) async {
-        guard !isRunning, !isScanning, !isRestoring,
-              let index = imageItems.firstIndex(where: { $0.id == id }),
-              imageItems[index].status == .success,
-              let destination = imageItems[index].destinationPath else { return }
-        let item = imageItems[index]
-        let destinationURL = URL(fileURLWithPath: destination).standardizedFileURL
-        let originalURL = item.previewOriginalURL ?? item.id
-        guard destinationURL.resolvingSymlinksInPath() != originalURL.resolvingSymlinksInPath() else {
-            showError("无法 Reset：缺少可恢复的原图副本，压缩结果已保留。")
-            return
-        }
-        isRestoring = true
-        defer { isRestoring = false }
-        let roots = selectedURLs
-        do {
-            try await Task.detached(priority: .userInitiated) {
-                let access = roots.map { $0.startAccessingSecurityScopedResource() }
-                defer {
-                    for (root, granted) in zip(roots, access) where granted {
-                        root.stopAccessingSecurityScopedResource()
-                    }
-                }
-                // Keep output-folder structure intact: a discarded result becomes an unchanged original.
-                // Prepare on the destination volume, then atomically replace without deleting the result first.
-                let temporary = destinationURL.deletingLastPathComponent()
-                    .appendingPathComponent(".tinypng-reset-\(UUID().uuidString)")
-                defer { try? FileManager.default.removeItem(at: temporary) }
-                try FileManager.default.copyItem(at: originalURL, to: temporary)
-                guard rename(temporary.path, destinationURL.path) == 0 else {
-                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
-                }
-            }.value
-            imageItems[index].status = .skipped
-            imageItems[index].compressionOverride = false
-            imageItems[index].manualSkipOrder = nextManualSkipOrder
-            nextManualSkipOrder += 1
-            imageItems[index].compressedByteCount = nil
-            imageItems[index].compressionPercentage = nil
-            imageItems[index].elapsedSeconds = nil
-            operationStatus = "已恢复原图并跳过压缩"
-            operationStatusSystemImage = "checkmark.circle"
-        } catch {
-            showError("Reset 失败：\(error.localizedDescription)")
-        }
+    func supportsProcessing(_ item: TinyPNGImageItem) -> Bool {
+        item.byteCount <= TinyPNGInputScanner.maxUploadBytes
     }
 
     var isError: Bool {
@@ -836,6 +746,7 @@ final class TinyPNGModel {
         }
         item.elapsedSeconds = event.elapsed
         if event.ok {
+            item.resultReplacedOriginal = event.skipped != true && replaceOriginals
             item.compressedByteCount = event.after
             item.compressionPercentage = ImageCompressionSizeStats(
                 beforeBytes: event.before,

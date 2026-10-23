@@ -42,6 +42,12 @@ An image excluded before upload by the size rules or its per-image switch. Manua
 **Reset compression result**:
 Discard one completed result by restoring original bytes at its destination, then switch off compression and move it to the skipped group. Replacement mode restores the preserved source snapshot; output-folder mode replaces the result with an unchanged original. If restoration fails, keep the result state and report the error. Completed images keep their comparison action and are excluded from later compression runs until reset and manually enabled again.
 
+## Shared Luban and WebP selection
+
+Luban and WebP use the same two groups, threshold defaults, per-image overrides, manual skip order, comparison, and Reset actions as TinyPNG. Luban has no upload-size limit. Existing WebP sources stay skipped and cannot be enabled for conversion. A WebP conversion that does not reduce file size also joins the skipped group and can be enabled again manually.
+
+Reset preserves the original image format and extension. For a JPEG or WebP result in an output folder, restore an unchanged copy with the source extension, choose an unused name if needed, then remove the discarded result. For WebP replacement, restore the deleted source at its original path before removing the generated WebP. A recreated source with different bytes blocks Reset rather than being overwritten. Results retain their original replacement mode even when the page-wide switch changes later.
+
 **Top-image hit area**:
 The top image's displayed rectangular frame, including transparent pixels. A gesture that begins inside this area edits the top image; a gesture that begins elsewhere navigates the preview viewport.
 _Avoid_: Opaque pixels, selected layer

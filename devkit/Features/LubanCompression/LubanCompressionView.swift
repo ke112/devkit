@@ -15,11 +15,20 @@ struct LubanImageItem: Identifiable, Equatable {
     var elapsedSeconds: Double?
     var destinationPath: String?
     var previewOriginalURL: URL? = nil
+    var compressionOverride: Bool? = nil
+    var manualSkipOrder: Int? = nil
+    var resultReplacedOriginal = false
 }
 
-extension LubanImageItem: ImageCompressionTaskItem {
-    var resultByteCount: Int64? { compressedByteCount }
-    var resultPercentage: Double? { compressionPercentage }
+extension LubanImageItem: SelectableImageCompressionTaskItem {
+    var resultByteCount: Int64? {
+        get { compressedByteCount }
+        set { compressedByteCount = newValue }
+    }
+    var resultPercentage: Double? {
+        get { compressionPercentage }
+        set { compressionPercentage = newValue }
+    }
 }
 
 // MARK: - 扫描
@@ -45,7 +54,7 @@ enum LubanInputScanner {
 
 @MainActor
 @Observable
-final class LubanCompressionModel {
+final class LubanCompressionModel: ImageCompressionSelectionModel {
     static let defaultMinimumCompressionSizeKB = 0
     static let maximumMinimumCompressionSizeKB = Int(Int64.max / 1024)
     private static let minimumCompressionSizeKey = "luban.minimumCompressionSizeKB"
@@ -61,11 +70,14 @@ final class LubanCompressionModel {
                 return
             }
             preferencesDefaults.set(normalized, forKey: Self.minimumCompressionSizeKey)
+            refreshSkippedItems()
         }
     }
     var isScanning = false
     var isRunning = false
     var isStopping = false
+    var isRestoring = false
+    var nextManualSkipOrder = 0
     var operationStatus = "请选择图片或文件夹"
     var operationStatusSystemImage = "photo.on.rectangle"
     var alertMessage: String?
@@ -101,9 +113,12 @@ final class LubanCompressionModel {
 
     var canRun: Bool {
         !selectedURLs.isEmpty
-            && imageItems.contains { if case .waiting = $0.status { return true }; return false }
+            && imageItems.contains {
+                $0.status == .waiting || ($0.status != .success && $0.status != .skipped && isCompressionEnabled(for: $0))
+            }
             && !isScanning
             && !isRunning
+            && !isRestoring
     }
 
     var isError: Bool { operationStatusSystemImage == "xmark.circle" }
@@ -126,15 +141,15 @@ final class LubanCompressionModel {
 
     var compressionStats: ImageCompressionSizeStats? {
         guard !imageItems.isEmpty,
-              imageItems.allSatisfy({ $0.compressedByteCount != nil }) else { return nil }
+              imageItems.allSatisfy({ $0.status == .skipped || $0.compressedByteCount != nil }) else { return nil }
         return ImageCompressionSizeStats(
             beforeBytes: imageItems.reduce(0) { $0 + $1.byteCount },
-            afterBytes: imageItems.reduce(0) { $0 + ($1.compressedByteCount ?? 0) }
+            afterBytes: imageItems.reduce(0) { $0 + ($1.status == .skipped ? $1.byteCount : ($1.compressedByteCount ?? 0)) }
         )
     }
 
     func select(urls: [URL]) {
-        guard !isRunning else { return }
+        guard !isRunning, !isRestoring else { return }
         let standardizedURLs = urls.map(\.standardizedFileURL)
         let validURLs = standardizedURLs.filter(LubanInputScanner.accepts)
         guard !validURLs.isEmpty else {
@@ -178,7 +193,7 @@ final class LubanCompressionModel {
                         id: image.url,
                         relativePath: self.relativePath(for: image.url, inputURL: inputURL),
                         byteCount: image.byteCount,
-                        status: .waiting,
+                        status: image.byteCount >= Int64(self.minimumCompressionSizeKB) * 1024 ? .waiting : .skipped,
                         compressedByteCount: nil,
                         compressionPercentage: nil
                     ))
@@ -207,11 +222,9 @@ final class LubanCompressionModel {
     @discardableResult
     func run() -> Task<Void, Never>? {
         guard canRun else { return nil }
-        // 先取待压缩快照，再把状态切到 .working；循环内以 imageItems 的当前状态为准（中途停止后跳过）
-        let pendingItems = imageItems.filter {
-            if case .waiting = $0.status { return true }
-            return false
-        }
+        // Include skipped originals for output copies, while retaining completed results across runs.
+        let pendingItems = imageItems.filter { $0.status != .success }
+        let compressibleIDs = Set(pendingItems.filter { isCompressionEnabled(for: $0) }.map(\.id))
         let shouldReplace = replaceOriginals
 
         // 准备输出目录
@@ -233,25 +246,32 @@ final class LubanCompressionModel {
         operationStatus = "正在压缩"
         operationStatusSystemImage = "arrow.triangle.2.circlepath"
         imageItems = imageItems.map { item in
-            guard case .waiting = item.status else { return item }
+            guard item.status != .success else { return item }
             var updated = item
-            updated.status = .working
+            updated.status = compressibleIDs.contains(item.id) ? .working : .skipped
+            updated.clearResultMetrics()
             return updated
         }
 
-        let minimumCompressionBytes = Int64(minimumCompressionSizeKB) * 1024
         let destinations = outputDir.map {
-            Self.outputDestinations(for: pendingItems, in: $0, minimumBytes: minimumCompressionBytes)
+            Self.outputDestinations(for: pendingItems, in: $0, compressibleIDs: compressibleIDs)
         } ?? [:]
+        let roots = selectedURLs
         compressionTask = Task { @MainActor [weak self] in
+            let access = roots.map { $0.startAccessingSecurityScopedResource() }
+            defer {
+                for (root, granted) in zip(roots, access) where granted {
+                    root.stopAccessingSecurityScopedResource()
+                }
+            }
             guard let self else { return }
             for item in pendingItems {
                 guard !Task.isCancelled else { break }
                 guard let current = self.imageItems.first(where: { $0.id == item.id }),
-                      case .working = current.status else { continue }
+                      current.status == .working || current.status == .skipped else { continue }
 
                 // 非替换模式也保留跳过图片的原始字节和扩展名。
-                if item.byteCount < minimumCompressionBytes {
+                if !compressibleIDs.contains(item.id) {
                     do {
                         var destination = item.id
                         if !shouldReplace, let target = destinations[item.id] {
@@ -281,14 +301,17 @@ final class LubanCompressionModel {
                     let startedAt = Date()
                     let outputURL: URL
                     if shouldReplace {
-                        let originalURL = try await self.previewOriginals.capture(at: item.id)
-                        guard !Task.isCancelled else { break }
-                        self.updateItem(item.id) { $0.previewOriginalURL = originalURL }
+                        if item.previewOriginalURL == nil {
+                            let originalURL = try await self.previewOriginals.capture(at: item.id)
+                            guard !Task.isCancelled else { break }
+                            self.updateItem(item.id) { $0.previewOriginalURL = originalURL }
+                        }
                         // 替换原图时先压缩到临时文件，成功后再覆盖
                         let temp = FileManager.default.temporaryDirectory
                             .appendingPathComponent(UUID().uuidString)
                             .appendingPathExtension("jpg")
                         let compressed = try await Luban.compress(item.id, to: temp)
+                        try Task.checkCancellation()
                         _ = try FileManager.default.replaceItemAt(item.id, withItemAt: compressed)
                         outputURL = item.id
                     } else {
@@ -319,6 +342,7 @@ final class LubanCompressionModel {
                             : 0
                         updated.elapsedSeconds = elapsed
                         updated.destinationPath = outputURL.path
+                        updated.resultReplacedOriginal = shouldReplace
                     }
                 } catch {
                     guard !Task.isCancelled else { break }
@@ -345,7 +369,8 @@ final class LubanCompressionModel {
                 self.operationStatus = "压缩完成（\(failedCount) 张失败）"
                 self.operationStatusSystemImage = "xmark.circle"
             } else {
-                self.operationStatus = "压缩完成"
+                let skippedCount = self.imageItems.filter { $0.status == .skipped }.count
+                self.operationStatus = skippedCount > 0 ? "压缩完成（跳过 \(skippedCount) 张图片）" : "压缩完成"
                 self.operationStatusSystemImage = "checkmark.circle"
             }
         }
@@ -377,7 +402,7 @@ final class LubanCompressionModel {
     }
 
     func clearSelection() {
-        guard !isRunning, !isScanning else { return }
+        guard !isRunning, !isScanning, !isRestoring else { return }
         scanTask?.cancel()
         scanTask = nil
         activeSelectionToken = UUID()
@@ -385,6 +410,7 @@ final class LubanCompressionModel {
         selectedURLs = []
         imageItems = []
         previewOriginals = ImageCompressionOriginals()
+        nextManualSkipOrder = 0
         outputDirectoryURL = nil
         operationStatus = "请选择图片或文件夹"
         operationStatusSystemImage = "photo.on.rectangle"
@@ -415,17 +441,17 @@ final class LubanCompressionModel {
     }
 
     private static func outputDestinations(
-        for items: [LubanImageItem], in directory: URL, minimumBytes: Int64
+        for items: [LubanImageItem], in directory: URL, compressibleIDs: Set<URL>
     ) -> [URL: URL] {
         var destinations: [URL: URL] = [:]
         var usedPaths = Set<String>()
         // Reserve unchanged files first so an encoded JPEG cannot take a skipped JPG's name.
-        let ordered = items.filter { $0.byteCount < minimumBytes }
-            + items.filter { $0.byteCount >= minimumBytes }
+        let ordered = items.filter { !compressibleIDs.contains($0.id) }
+            + items.filter { compressibleIDs.contains($0.id) }
         for item in ordered {
             let original = directory.appendingPathComponent(item.relativePath)
-            let preferred = item.byteCount < minimumBytes ? original
-                : original.deletingPathExtension().appendingPathExtension("jpg")
+            let preferred = compressibleIDs.contains(item.id)
+                ? original.deletingPathExtension().appendingPathExtension("jpg") : original
             var candidate = preferred
             var suffix = 2
             while !usedPaths.insert(candidate.path.precomposedStringWithCanonicalMapping.lowercased()).inserted {
@@ -437,6 +463,17 @@ final class LubanCompressionModel {
             destinations[item.id] = candidate
         }
         return destinations
+    }
+
+    private func refreshSkippedItems() {
+        guard !isRunning, !isScanning, !isRestoring else { return }
+        imageItems = imageItems.map { item in
+            guard item.status != .success, item.status != .working else { return item }
+            var updated = item
+            updated.status = isCompressionEnabled(for: item) ? .waiting : .skipped
+            updated.clearResultMetrics()
+            return updated
+        }
     }
 
     private func relativePath(for imageURL: URL, inputURL: URL) -> String {
@@ -479,7 +516,7 @@ struct LubanCompressionView: View {
             minimumCompressionSizeKB: $model.minimumCompressionSizeKB,
             replaceOriginals: $model.replaceOriginals,
             isDropTargeted: $isDropTargeted,
-            isBusy: model.isRunning || model.isScanning,
+            isBusy: model.isRunning || model.isScanning || model.isRestoring,
             isStopping: model.isStopping,
             canRun: model.canRun,
             selectedCount: model.imageItems.count,
@@ -494,6 +531,13 @@ struct LubanCompressionView: View {
             completionPercentage: model.completionPercentage,
             statsText: statsText,
             tasks: taskDisplayModels,
+            taskGroups: model.displayGroups,
+            onSetCompressionEnabled: { id, enabled in
+                Task { await model.setCompressionEnabled(enabled, for: id) }
+            },
+            onResetResult: { id in
+                Task { await model.resetResult(for: id) }
+            },
             onDrop: { urls in
                 guard !urls.isEmpty else { return false }
                 model.select(urls: urls)
@@ -538,7 +582,7 @@ struct LubanCompressionView: View {
             }
         }
         .alert(
-            "无法选择输入",
+            "Luban 图片压缩",
             isPresented: Binding(
                 get: { model.alertMessage != nil },
                 set: { if !$0 { model.alertMessage = nil } }

@@ -34,6 +34,7 @@ struct ImageCompressionPreviewTests {
         let display = ImageTaskDisplayModel(item: item, resultLabel: "压缩后", verb: "压缩")
 
         #expect(display.originalPreviewURL == preserved)
+        #expect(display.thumbnailURL == preserved)
         #expect(display.destinationPath == "/tmp/output/source.jpg")
         #expect(display.canPreview)
     }

@@ -6,6 +6,7 @@ import errno
 from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import io
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -21,6 +22,80 @@ spec.loader.exec_module(webp)
 
 
 class WebPSafetyTests(unittest.TestCase):
+    def test_manifest_honors_manual_switches_and_excludes_completed_or_new_images(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            inputs = root / "inputs"
+            inputs.mkdir()
+            for name in ["manual-on.png", "manual-off.png", "completed.png", "new.png", "existing.webp"]:
+                (inputs / name).write_bytes(b"original" * 100)
+            enabled = inputs / "manual-on.png"
+            manifest = root / "selection.json"
+            manifest.write_text(json.dumps({str(enabled): True, str(inputs / "manual-off.png"): False,
+                                            str(inputs / "existing.webp"): True}))
+
+            def encode(_, target, *__):
+                target.write_bytes(b"webp")
+                return ""
+
+            with patch.object(sys, "argv", [str(SCRIPT), str(inputs), "--selection-file", str(manifest),
+                                             "--min-size-kb", "100"]), \
+                 patch.object(webp, "cwebp_available", return_value=True), \
+                 patch.object(webp, "encode_webp", side_effect=encode) as encoder, \
+                 contextlib.redirect_stdout(io.StringIO()) as output, self.assertRaises(SystemExit) as result:
+                webp.main()
+            self.assertEqual(result.exception.code, 0)
+            self.assertEqual([call.args[0] for call in encoder.call_args_list], [enabled])
+            folder = next(root.glob("inputs_webp_*"))
+            self.assertEqual((folder / "manual-off.png").read_bytes(), b"original" * 100)
+            self.assertEqual((folder / "existing.webp").read_bytes(), b"original" * 100)
+            self.assertFalse((folder / "completed.webp").exists())
+            self.assertFalse((folder / "new.webp").exists())
+            events = [json.loads(line[6:]) for line in output.getvalue().splitlines() if line.startswith("EVENT ")]
+            self.assertEqual(sum(event["ok"] for event in events), 1)
+            self.assertEqual(sum(event["skipped"] for event in events), 2)
+
+    def test_replacement_rerun_only_converts_newly_enabled_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            first = root / "first.png"
+            second = root / "second.png"
+            for source in [first, second]:
+                source.write_bytes(b"original" * 100)
+            manifest = root / "selection.json"
+
+            def encode(_, target, *__):
+                target.write_bytes(b"webp")
+                return ""
+
+            with patch.object(sys, "argv", [str(SCRIPT), str(root), "--selection-file", str(manifest), "--replace"]), \
+                 patch.object(webp, "cwebp_available", return_value=True), \
+                 patch.object(webp, "encode_webp", side_effect=encode) as encoder, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                manifest.write_text(json.dumps({str(first): True, str(second): False}))
+                with self.assertRaises(SystemExit):
+                    webp.main()
+                self.assertFalse(first.exists())
+                self.assertTrue(second.exists())
+                manifest.write_text(json.dumps({str(second): True}))
+                with self.assertRaises(SystemExit):
+                    webp.main()
+            self.assertEqual([call.args[0] for call in encoder.call_args_list], [first, second])
+            self.assertEqual(first.with_suffix(".webp").read_bytes(), b"webp")
+            self.assertEqual(second.with_suffix(".webp").read_bytes(), b"webp")
+
+    def test_invalid_manifest_stops_before_encoding(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = root / "selection.json"
+            manifest.write_text('["invalid"]')
+            with patch.object(sys, "argv", [str(SCRIPT), str(root), "--selection-file", str(manifest)]), \
+                 patch.object(webp, "encode_webp") as encoder, \
+                 contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as result:
+                webp.main()
+            self.assertEqual(result.exception.code, 2)
+            encoder.assert_not_called()
+
     def test_concurrent_same_stem_preserves_existing_webp_and_both_results(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
