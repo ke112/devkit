@@ -300,16 +300,22 @@ def collect_images(input_path: Path) -> list[Path]:
     return images
 
 
-def skipped_images(images: list[Path], minimum_compression_bytes: int) -> list[tuple[Path, int, str]]:
+def skipped_images(images: list[Path], minimum_compression_bytes: int,
+                   selection: dict[Path, bool] | None = None) -> list[tuple[Path, int, str]]:
     """在调用 TinyPNG 前筛出超过上传上限或低于最低压缩大小的图片。"""
     return [
         (
             image,
             image.stat().st_size,
-            "超过单张上传上限" if image.stat().st_size > MAX_UPLOAD_BYTES else "低于最低压缩大小",
+            "超过单张上传上限" if image.stat().st_size > MAX_UPLOAD_BYTES else (
+                "已关闭压缩" if selection is not None else "低于最低压缩大小"
+            ),
         )
         for image in images
-        if image.stat().st_size > MAX_UPLOAD_BYTES or image.stat().st_size < minimum_compression_bytes
+        if image.stat().st_size > MAX_UPLOAD_BYTES or (
+            not selection[image.resolve()] if selection is not None
+            else image.stat().st_size < minimum_compression_bytes
+        )
     ]
 
 
@@ -407,6 +413,10 @@ def main():
     parser = argparse.ArgumentParser(description="TinyPNG 批量压缩工具")
     parser.add_argument("paths", nargs="*", help="图片文件或文件夹路径，可传多个")
     parser.add_argument(
+        "--selection-file", default="",
+        help="可选 JSON 对象：图片绝对路径映射到是否压缩；仅处理清单中的图片，手动开启可覆盖最低大小但不覆盖上传上限",
+    )
+    parser.add_argument(
         "--replace",
         action="store_true",
         help="压缩成功后替换原图；默认写入同级时间戳文件夹",
@@ -437,6 +447,17 @@ def main():
         raw_paths = [raw]
     replace_originals = args.replace
     minimum_compression_bytes = max(0, args.min_size_kb) * 1024
+    selection = None
+    if args.selection_file:
+        try:
+            values = json.loads(Path(args.selection_file).read_text(encoding="utf-8"))
+            if not isinstance(values, dict) or any(
+                not isinstance(key, str) or not isinstance(value, bool) for key, value in values.items()
+            ):
+                raise ValueError("清单必须是图片路径到布尔值的映射")
+            selection = {Path(key).resolve(): value for key, value in values.items()}
+        except (OSError, ValueError) as error:
+            parser.error(f"无法读取压缩清单: {error}")
 
     input_roots: list[Path] = []
     for raw in raw_paths:
@@ -453,6 +474,8 @@ def main():
         unique_images = []
         for image in collect_images(root):
             canonical_path = image.resolve()
+            if selection is not None and canonical_path not in selection:
+                continue
             if canonical_path not in seen_paths:
                 seen_paths.add(canonical_path)
                 unique_images.append(image)
@@ -522,7 +545,7 @@ def main():
     def copy_unchanged(root: Path, image: Path):
         """文件夹输出模式下，把跳过图片按原结构复制到输出目录。"""
         if replace_originals:
-            return
+            return image
         relative = relative_to_root(root, image)
         # 单文件根平铺到输出目录（与 Luban 一致），文件夹根按根名分组避免多根重名
         if len(input_roots) == 1 or root.is_file():
@@ -532,11 +555,16 @@ def main():
         unchanged_dst.parent.mkdir(parents=True, exist_ok=True)
         if not unchanged_dst.exists():
             shutil.copy2(image, unchanged_dst)
+        return unchanged_dst
 
-    skipped = skipped_images(images, minimum_compression_bytes)
+    skipped = skipped_images(images, minimum_compression_bytes, selection)
     skipped_paths = {path for path, _, _ in skipped}
     for img, size, reason in skipped:
-        copy_unchanged(root_of[img], img)
+        destination = copy_unchanged(root_of[img], img)
+        print("EVENT " + json.dumps({
+            "src": str(img), "dst": str(destination), "ok": True, "skipped": True,
+            "before": size, "after": size, "elapsed": 0, "error": "",
+        }, ensure_ascii=False), flush=True)
         print(f"  ⚠️ 跳过（{reason}）: {img} ({format_size(size)})")
     if skipped:
         unchanged_message = "原图已保留到输出目录" if not replace_originals else "原图保持不变"

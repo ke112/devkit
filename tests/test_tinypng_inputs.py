@@ -28,6 +28,56 @@ with patch.dict(sys.modules, {
 
 
 class TinyPNGInputsTests(unittest.TestCase):
+    def test_manifest_excludes_completed_and_new_files_and_honors_switches(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            images = root / "images"
+            images.mkdir()
+            for name in ["manual-on", "manual-off", "completed", "new"]:
+                (images / f"{name}.png").write_bytes(name.encode())
+            manifest = root / "selection.json"
+            enabled = images / "manual-on.png"
+            disabled = images / "manual-off.png"
+            manifest.write_text(json.dumps({str(enabled): True, str(disabled): False}))
+            with patch.object(sys, "argv", [str(SCRIPT), str(images), "--selection-file", str(manifest),
+                                             "--min-size-kb", "100"]), \
+                 patch.object(tinypng, "start_parent_watchdog"), \
+                 patch.object(tinypng, "create_session"), \
+                 patch.object(tinypng, "run_batch", return_value=([], [], 9, 4)) as batch, \
+                 contextlib.redirect_stdout(io.StringIO()) as output:
+                tinypng.main()
+            self.assertEqual([source for source, _ in batch.call_args.args[0]], [enabled.resolve()])
+            copies = list(root.glob("images_*/manual-off.png"))
+            self.assertEqual(len(copies), 1)
+            self.assertEqual(copies[0].read_bytes(), disabled.read_bytes())
+            self.assertEqual(list(root.glob("images_*/completed.png")), [])
+            self.assertEqual(list(root.glob("images_*/new.png")), [])
+            events = [json.loads(line[6:]) for line in output.getvalue().splitlines() if line.startswith("EVENT ")]
+            self.assertEqual(Path(events[0]["dst"]).resolve(), copies[0].resolve())
+            self.assertTrue(events[0]["skipped"])
+            self.assertEqual(events[0]["error"], "")
+
+    def test_manifest_cannot_override_upload_limit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "large.png"
+            with image.open("wb") as file:
+                file.truncate(tinypng.MAX_UPLOAD_BYTES + 1)
+            self.assertEqual(tinypng.skipped_images([image], 0, {image: True})[0][2], "超过单张上传上限")
+
+    def test_invalid_manifest_fails_before_scanning_or_uploading(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = root / "selection.json"
+            manifest.write_text(json.dumps({str(root / "image.png"): "false"}))
+            with patch.object(sys, "argv", [str(SCRIPT), str(root), "--selection-file", str(manifest)]), \
+                 patch.object(tinypng, "start_parent_watchdog"), \
+                 patch.object(tinypng, "create_session") as session, \
+                 contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as result:
+                tinypng.main()
+            self.assertEqual(result.exception.code, 2)
+            session.assert_not_called()
+
     def test_local_write_error_exits_without_uploading_again(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "photo.png"

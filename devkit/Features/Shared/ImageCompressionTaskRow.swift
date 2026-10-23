@@ -21,6 +21,10 @@ struct ImageCompressionTaskRow: View {
     var onPreview: (() -> Void)? = nil
     let onRevealSource: () -> Void
     var onRevealDestination: ((URL) -> Void)? = nil
+    var compressionEnabled: Bool? = nil
+    var compressionControlsDisabled = false
+    var onSetCompressionEnabled: ((Bool) -> Void)? = nil
+    var onResetResult: (() -> Void)? = nil
 
     @State private var showMissingFile = false
 
@@ -97,6 +101,25 @@ struct ImageCompressionTaskRow: View {
             }
             .buttonStyle(.borderless)
             .help("在 Finder 中显示原图")
+
+            if let onResetResult {
+                Button("Reset", action: onResetResult)
+                    .buttonStyle(.borderless)
+                    .disabled(compressionControlsDisabled)
+                    .help("放弃压缩结果，恢复原图并跳过压缩")
+            }
+
+            if let compressionEnabled {
+                Toggle("参与压缩", isOn: Binding(
+                    get: { compressionEnabled },
+                    set: { onSetCompressionEnabled?($0) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .disabled(compressionControlsDisabled)
+                .accessibilityLabel("\(title) 参与压缩")
+                .help("开启参与压缩；关闭后保留原图并移到已跳过组")
+            }
         }
         .padding(.vertical, 4)
         .alert("文件不存在", isPresented: $showMissingFile) {

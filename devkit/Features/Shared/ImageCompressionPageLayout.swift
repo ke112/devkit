@@ -16,10 +16,19 @@ struct ImageTaskDisplayModel: Identifiable, Equatable {
     let stateTitle: String
     let stateColor: Color
     let canPreview: Bool
+    var compressionEnabled: Bool? = nil
+    var compressionToggleAllowed = true
+    var canReset = false
 
     var stateStyle: ImageCompressionTaskRowStyle {
         .label(stateTitle, stateColor)
     }
+}
+
+struct ImageTaskDisplayGroup: Identifiable {
+    let id: String
+    let title: String
+    let tasks: [ImageTaskDisplayModel]
 }
 
 /// 三个页面任务条目的共用读取接口；由各页 Item 结构体实现，供展示行统一映射。
@@ -282,6 +291,9 @@ struct ImageCompressionPageLayout<Extras: View>: View {
     let completionPercentage: Int
     let statsText: String?
     let tasks: [ImageTaskDisplayModel]
+    var taskGroups: [ImageTaskDisplayGroup]? = nil
+    var onSetCompressionEnabled: ((URL, Bool) -> Void)? = nil
+    var onResetResult: ((URL) -> Void)? = nil
 
     var onDrop: ([URL]) -> Bool
     var onClear: () -> Void
@@ -349,30 +361,27 @@ struct ImageCompressionPageLayout<Extras: View>: View {
             actionBar
 
             if !tasks.isEmpty {
-                List(tasks) { task in
-                    ImageCompressionTaskRow(
-                        thumbnailURL: task.thumbnailURL,
-                        title: task.title,
-                        sizeSummary: task.sizeSummary,
-                        elapsedText: task.elapsedText,
-                        destinationPath: task.destinationPath,
-                        state: task.stateStyle,
-                        showsPreviewButton: task.canPreview,
-                        onPreview: {
-                            guard let destinationPath = task.destinationPath else { return }
-                            previewTarget = ImagePreviewTarget(
-                                originalURL: task.originalPreviewURL,
-                                compressedURL: URL(fileURLWithPath: destinationPath),
-                                resultLabel: task.resultLabel
-                            )
-                        },
-                        onRevealSource: {
-                            NSWorkspace.shared.activateFileViewerSelecting([task.id])
-                        },
-                        onRevealDestination: { url in
-                            NSWorkspace.shared.activateFileViewerSelecting([url])
+                List {
+                    if let taskGroups {
+                        ForEach(taskGroups) { group in
+                            HStack {
+                                Text(group.title).font(.headline)
+                                Text("\(group.tasks.count) 张").foregroundStyle(.secondary)
+                                Spacer()
+                            }
+                            .padding(.vertical, 6)
+                            ForEach(group.tasks) { task in
+                                taskRow(task)
+                            }
+                            if group.tasks.isEmpty {
+                                Text("暂无图片").foregroundStyle(.secondary)
+                            }
                         }
-                    )
+                    } else {
+                        ForEach(tasks) { task in
+                            taskRow(task)
+                        }
+                    }
                 }
                 .listStyle(.inset)
                 .frame(minHeight: 200)
@@ -394,6 +403,36 @@ struct ImageCompressionPageLayout<Extras: View>: View {
         } message: {
             Text("目标文件可能已被手动删除或移动。")
         }
+    }
+
+    private func taskRow(_ task: ImageTaskDisplayModel) -> some View {
+        ImageCompressionTaskRow(
+            thumbnailURL: task.thumbnailURL,
+            title: task.title,
+            sizeSummary: task.sizeSummary,
+            elapsedText: task.elapsedText,
+            destinationPath: task.destinationPath,
+            state: task.stateStyle,
+            showsPreviewButton: task.canPreview,
+            onPreview: {
+                guard let destinationPath = task.destinationPath else { return }
+                previewTarget = ImagePreviewTarget(
+                    originalURL: task.originalPreviewURL,
+                    compressedURL: URL(fileURLWithPath: destinationPath),
+                    resultLabel: task.resultLabel
+                )
+            },
+            onRevealSource: {
+                NSWorkspace.shared.activateFileViewerSelecting([task.id])
+            },
+            onRevealDestination: { url in
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            },
+            compressionEnabled: task.compressionEnabled,
+            compressionControlsDisabled: isBusy || !task.compressionToggleAllowed,
+            onSetCompressionEnabled: { onSetCompressionEnabled?(task.id, $0) },
+            onResetResult: task.canReset ? { onResetResult?(task.id) } : nil
+        )
     }
 
     private var actionBar: some View {

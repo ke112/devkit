@@ -50,7 +50,7 @@ struct ImageCompressionSizeStats: Equatable {
 
 // MARK: - 脚本事件
 
-/// TinyPNG / WebP 脚本 `EVENT ` 行的共用解码模型；`skipped` 仅 WebP 脚本输出。
+/// TinyPNG / WebP 脚本 `EVENT ` 行的共用解码模型。
 struct ImageCompressionProcessEvent: Decodable {
     let src: String
     let dst: String?

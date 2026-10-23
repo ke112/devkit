@@ -31,13 +31,16 @@ _Avoid_: Output canvas, image transform
 # TinyPNG
 
 **Minimum compression size**:
-The configured lower bound for source image file size. Images smaller than this bound are skipped and are never uploaded to TinyPNG. The default is 100 KB.
+The configured lower bound for source image file size. Images smaller than this bound are skipped by default. A per-image switch overrides this rule until the selection is cleared; changing the threshold preserves manual choices. The default is 0 KB.
 
 **Upload limit**:
 The TinyPNG single-file upper bound of 5 MB. Images above this bound are skipped regardless of the minimum compression size.
 
 **Skipped image**:
-An image excluded before upload because it is below the minimum compression size or above the upload limit. In output-folder mode its original bytes are preserved; in replacement mode the source remains unchanged.
+An image excluded before upload by the size rules or its per-image switch. Manually excluded images appear first in the skipped group, in the order they were excluded; switching one back on returns it to the pending group. The 5 MB upload limit cannot be overridden. In output-folder mode its original bytes are preserved; in replacement mode the source remains unchanged.
+
+**Reset compression result**:
+Discard one completed result by restoring original bytes at its destination, then switch off compression and move it to the skipped group. Replacement mode restores the preserved source snapshot; output-folder mode replaces the result with an unchanged original. If restoration fails, keep the result state and report the error. Completed images keep their comparison action and are excluded from later compression runs until reset and manually enabled again.
 
 **Top-image hit area**:
 The top image's displayed rectangular frame, including transparent pixels. A gesture that begins inside this area edits the top image; a gesture that begins elsewhere navigates the preview viewport.
