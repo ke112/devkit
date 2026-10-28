@@ -274,9 +274,11 @@ struct ImageCompressionPageLayout<Extras: View>: View {
     var startLabel: String = "开始压缩"
 
     @Binding var minimumCompressionSizeKB: Int
+    @Binding var onlyGitChangedImages: Bool
     @Binding var replaceOriginals: Bool
     @Binding var isDropTargeted: Bool
 
+    let isGitFilterAvailable: Bool
     let isBusy: Bool
     let isStopping: Bool
     let canRun: Bool
@@ -317,28 +319,19 @@ struct ImageCompressionPageLayout<Extras: View>: View {
                     .foregroundStyle(.secondary)
             }
 
-            HStack(spacing: 24) {
-                HStack(spacing: 8) {
-                    Text(minimumLabel)
-                    TextField("0", value: $minimumCompressionSizeKB, format: .number)
-                        .frame(width: 72)
-                        .textFieldStyle(.roundedBorder)
-                        .multilineTextAlignment(.trailing)
-                    Text(minimumSuffix)
-                        .foregroundStyle(.secondary)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 24) {
+                    compressionParameters
+                    Spacer()
+                    replacementOptions
                 }
-                .disabled(isBusy)
-                .help("小于此大小的图片会跳过，0 表示全部处理")
-
-                extras
-                    .disabled(isBusy)
-
-                Spacer()
-
-                Toggle("自动替换原图路径", isOn: $replaceOriginals)
-                    .toggleStyle(.switch)
-                    .help(replaceHelp)
-                    .disabled(isBusy)
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 24) { compressionParameters }
+                    HStack {
+                        Spacer()
+                        replacementOptions
+                    }
+                }
             }
 
             ImageCompressionDropArea(isTargeted: $isDropTargeted, subtitle: dropSubtitle)
@@ -405,6 +398,40 @@ struct ImageCompressionPageLayout<Extras: View>: View {
         } message: {
             Text("目标文件可能已被手动删除或移动。")
         }
+    }
+
+    private var compressionParameters: some View {
+        Group {
+            HStack(spacing: 8) {
+                Text(minimumLabel)
+                TextField("0", value: $minimumCompressionSizeKB, format: .number)
+                    .frame(width: 72)
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
+                Text(minimumSuffix)
+                    .foregroundStyle(.secondary)
+            }
+            .help("小于此大小的图片会跳过，0 表示全部处理")
+            extras
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .disabled(isBusy)
+    }
+
+    private var replacementOptions: some View {
+        VStack(alignment: .trailing, spacing: 10) {
+            Toggle("仅压缩 Git 未提交的图片", isOn: $onlyGitChangedImages)
+                .toggleStyle(.switch)
+                .help(isGitFilterAvailable
+                      ? "只处理所选路径内 Git 已暂存、未暂存和未跟踪的图片，并自动替换原图"
+                      : "请先选择 Git 项目中的图片或文件夹；包含非 Git 路径时不可开启")
+                .disabled(isBusy || !isGitFilterAvailable)
+            Toggle("自动替换原图路径", isOn: $replaceOriginals)
+                .toggleStyle(.switch)
+                .help(onlyGitChangedImages ? "Git 筛选开启时必须替换原图；关闭 Git 筛选后可手动调整" : replaceHelp)
+                .disabled(isBusy || onlyGitChangedImages)
+        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private func taskRow(_ task: ImageTaskDisplayModel) -> some View {

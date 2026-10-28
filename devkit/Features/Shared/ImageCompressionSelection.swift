@@ -1,4 +1,37 @@
 import Foundation
+import Observation
+
+@MainActor
+@Observable
+final class ImageCompressionGitOptions {
+    private(set) var isAvailable = false
+    private(set) var isEnabled = false
+    // A cancelled rescan keeps the displayed list, so its filter mode must be restored too.
+    private var committedEnabled = false
+    private var manualReplacement = false
+
+    var replaceOriginals: Bool {
+        get { isEnabled || manualReplacement }
+        set {
+            guard !isEnabled else { return }
+            manualReplacement = newValue
+        }
+    }
+
+    func setEnabled(_ enabled: Bool) {
+        isEnabled = enabled && isAvailable
+    }
+
+    func updateAvailability(_ available: Bool) {
+        isAvailable = available
+        if !available { isEnabled = false }
+        committedEnabled = isEnabled
+    }
+
+    func cancelPendingChange() {
+        isEnabled = committedEnabled
+    }
+}
 
 protocol SelectableImageCompressionTaskItem: ImageCompressionTaskItem {
     var status: ImageCompressionTaskStatus { get set }
@@ -37,6 +70,72 @@ protocol ImageCompressionSelectionModel: AnyObject {
 }
 
 extension ImageCompressionSelectionModel {
+    func selectionHistory(merging current: [ImageItem], into previous: [ImageItem]) -> [ImageItem] {
+        var history = previous
+        var indices = Dictionary(previous.enumerated().map { ($0.element.id.resolvingSymlinksInPath(), $0.offset) },
+                                 uniquingKeysWith: { first, _ in first })
+        for item in current {
+            let url = item.id.resolvingSymlinksInPath()
+            if let index = indices[url] {
+                history[index] = item
+            } else {
+                indices[url] = history.count
+                history.append(item)
+            }
+        }
+        return history
+    }
+
+    // A completed WebP replacement has moved the original single-file input to its result path.
+    func effectiveScanRoots(_ roots: [URL], history: [ImageItem]) -> [URL] {
+        let replacements = Dictionary(history.filter(hasMovedReplacement).compactMap { item -> (URL, URL)? in
+            guard let destination = item.destinationPath else { return nil }
+            return (item.id.resolvingSymlinksInPath(), URL(fileURLWithPath: destination))
+        }, uniquingKeysWith: { first, _ in first })
+        return roots.map { replacements[$0.resolvingSymlinksInPath()] ?? $0 }
+    }
+
+    private func hasMovedReplacement(_ item: ImageItem) -> Bool {
+        item.status == .success && item.resultReplacedOriginal
+            && !FileManager.default.fileExists(atPath: item.id.path)
+            && item.destinationPath.map { FileManager.default.fileExists(atPath: $0) } == true
+    }
+
+    func retainingSelectionState(in scanned: [ImageItem], from previous: [ImageItem]) -> [ImageItem] {
+        let previousByURL = Dictionary(previous.map { ($0.id.resolvingSymlinksInPath(), $0) },
+                                       uniquingKeysWith: { first, _ in first })
+        let movedResults = previous.filter(hasMovedReplacement)
+        let resultURLs = Set(movedResults.compactMap { $0.destinationPath }.map {
+            URL(fileURLWithPath: $0).resolvingSymlinksInPath()
+        })
+        let retained = scanned.filter { !resultURLs.contains($0.id.resolvingSymlinksInPath()) }.map { item in
+            guard let old = previousByURL[item.id.resolvingSymlinksInPath()] else { return item }
+            if old.status == .success { return old }
+            // Hidden images must follow the current threshold when they return to the list.
+            var updated = old.byteCount == item.byteCount ? old : item
+            updated.compressionOverride = old.compressionOverride
+            updated.manualSkipOrder = old.manualSkipOrder
+            if !isCompressionEnabled(for: updated) {
+                updated.status = .skipped
+            } else if updated.status == .waiting || updated.status == .skipped {
+                updated.status = .waiting
+            }
+            return updated
+        }
+        return retained + movedResults
+    }
+
+    func reportGitScanFailure(_ error: Error) {
+        operationStatus = "Git 图片筛选失败"
+        operationStatusSystemImage = "xmark.circle"
+        alertMessage = error.localizedDescription
+    }
+
+    func reportEmptyGitSelection() {
+        operationStatus = "所选路径中没有 Git 未提交的图片"
+        operationStatusSystemImage = "checkmark.circle"
+    }
+
     var operationVerb: String { "压缩" }
 
     func supportsProcessing(_ item: ImageItem) -> Bool { true }
