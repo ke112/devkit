@@ -157,7 +157,6 @@ struct TinyPNGImageItem: Identifiable, Equatable {
     var previewOriginalURL: URL? = nil
     /// nil follows the size threshold; an explicit choice survives threshold changes.
     var compressionOverride: Bool? = nil
-    var manualSkipOrder: Int? = nil
     var resultReplacedOriginal = false
 }
 
@@ -228,25 +227,8 @@ final class TinyPNGModel: ImageCompressionSelectionModel {
     static let maximumMinimumCompressionSizeKB = Int(Int64.max / 1024)
     private static let minimumCompressionSizeKey = "tinypng.minimumCompressionSizeKB.v2"
 
-    var selectedURLs: [URL] = []
+    let selectionState = ImageCompressionSelectionState<TinyPNGImageItem>()
     var selectionSummary: TinyPNGSelectionSummary?
-    var imageItems: [TinyPNGImageItem] = []
-    private var gitOptions = ImageCompressionGitOptions()
-    var isGitFilterAvailable: Bool { gitOptions.isAvailable }
-    var onlyGitChangedImages: Bool {
-        get { gitOptions.isEnabled }
-        set {
-            let previous = gitOptions.isEnabled
-            gitOptions.setEnabled(newValue)
-            if previous != gitOptions.isEnabled, !selectedURLs.isEmpty {
-                select(urls: selectedURLs, refreshing: true)
-            }
-        }
-    }
-    var replaceOriginals: Bool {
-        get { gitOptions.replaceOriginals }
-        set { gitOptions.replaceOriginals = newValue }
-    }
 
     var minimumCompressionSizeKB: Int {
         didSet {
@@ -256,10 +238,9 @@ final class TinyPNGModel: ImageCompressionSelectionModel {
                 return
             }
             preferencesDefaults.set(normalized, forKey: Self.minimumCompressionSizeKey)
-            refreshSkippedItems()
+            refreshSelectionEligibility()
         }
     }
-    var isScanning = false
     var isRunning = false
     var isStopping = false
     var isRestoring = false
@@ -269,16 +250,10 @@ final class TinyPNGModel: ImageCompressionSelectionModel {
     var alertMessage: String?
     var outputDirectoryURL: URL?
 
-    private var scanWorker: Task<ImageCompressionScanResult, Error>?
-    private var pendingScanURLs: [URL] = []
-    private var retainedSelectionItems: [TinyPNGImageItem] = []
-    private var isRefreshingSelection = false
-    private var activeSelectionToken = UUID()
     private var outputEventBuffer = ""
     private var processCancellation: StreamingProcessCancellation?
     private let preferencesDefaults: UserDefaults
     private var previewOriginals = ImageCompressionOriginals()
-    var nextManualSkipOrder = 0
 
     init(preferencesDefaults: UserDefaults = .standard) {
         self.preferencesDefaults = preferencesDefaults
@@ -286,14 +261,6 @@ final class TinyPNGModel: ImageCompressionSelectionModel {
         self.minimumCompressionSizeKB = Self.normalizedMinimumCompressionSizeKB(
             storedValue ?? Self.defaultMinimumCompressionSizeKB
         )
-    }
-
-    var canRun: Bool {
-        !selectedURLs.isEmpty
-            && imageItems.contains(where: { isCompressionEnabled(for: $0) && $0.status != .success })
-            && !isScanning
-            && !isRunning
-            && !isRestoring
     }
 
     func supportsProcessing(_ item: TinyPNGImageItem) -> Bool {
@@ -343,132 +310,40 @@ final class TinyPNGModel: ImageCompressionSelectionModel {
         )
     }
 
-    @discardableResult
-    func select(urls: [URL], refreshing: Bool = false, startAfterScan: Bool = false) -> Bool {
-        guard !isRunning, !isRestoring, !isRefreshingSelection else { return false }
-        let previousItems = selectionHistory(merging: imageItems, into: retainedSelectionItems)
-        // Revalidate the ordinary queue without adding newly discovered files or prior outputs.
-        let queuedURLs = startAfterScan && !onlyGitChangedImages
-            ? Set(imageItems.map { $0.id.resolvingSymlinksInPath() }) : nil
-        let standardizedURLs = urls.map(\.standardizedFileURL)
-        let effectiveURLs = effectiveScanRoots(standardizedURLs, history: previousItems)
-        // Existing inputs must all reach eligibility validation, including paths that disappeared.
-        let validURLs = refreshing ? standardizedURLs : zip(standardizedURLs, effectiveURLs)
-            .filter { TinyPNGInputScanner.accepts($0.1) }.map(\.0)
-        guard !validURLs.isEmpty else {
-            showError("请选择文件夹，或选择 PNG、JPG、JPEG、WebP 图片。")
-            return false
-        }
-        var knownRoots = Set((refreshing ? [] : selectedURLs + pendingScanURLs).map(\.path))
-        let initiallyAcceptedURLs = validURLs.filter { knownRoots.insert($0.path).inserted }
-        let acceptedURLs = initiallyAcceptedURLs.filter { url in
-            refreshing || !initiallyAcceptedURLs.contains { root in
-                root.path != url.path && url.path.hasPrefix(root.path + "/")
-            }
-        }
+    var scanConfiguration: ImageCompressionScanConfiguration {
+        ImageCompressionScanConfiguration(
+            supportedExtensions: TinyPNGInputScanner.supportedExtensions, scan: TinyPNGInputScanner.scan,
+            invalidInputMessage: "请选择文件夹，或选择 PNG、JPG、JPEG、WebP 图片。",
+            emptyInputMessage: "新添加的路径中没有可压缩的 PNG、JPG、JPEG 或 WebP 图片。"
+        )
+    }
 
-        scanWorker?.cancel()
-        scanWorker = nil
-        isScanning = false
-        activeSelectionToken = UUID()
-        isRefreshingSelection = refreshing
-        let inputRoots = refreshing ? acceptedURLs : selectedURLs + pendingScanURLs + acceptedURLs
-        var seenRoots = Set<String>()
-        pendingScanURLs = inputRoots.filter { seenRoots.insert($0.path).inserted }
-        isScanning = true
+    func makeSelectionItem(_ image: ImageScannedImage, relativePath: String) -> TinyPNGImageItem {
+        TinyPNGImageItem(id: image.url, relativePath: relativePath, byteCount: image.byteCount, status: .waiting)
+    }
+
+    func prepareForSelectionScan() {
         output = ""
         outputEventBuffer = ""
         outputDirectoryURL = nil
-        operationStatus = "正在扫描图片"
-        operationStatusSystemImage = "arrow.triangle.2.circlepath"
-        alertMessage = nil
+    }
 
-        let selectionToken = UUID()
-        activeSelectionToken = selectionToken
-        // Include the previous pending batch when replacing an in-flight scan.
-        let scannedURLs = pendingScanURLs
-        let effectiveRoots = effectiveScanRoots(scannedURLs, history: previousItems)
-        let gitOnly = onlyGitChangedImages
-        let worker = Task.detached(priority: .userInitiated) {
-            try GitChangedImageScanner.scanSelection(
-                effectiveRoots, onlyGitChangedImages: gitOnly,
-                supportedExtensions: TinyPNGInputScanner.supportedExtensions, scanImage: TinyPNGInputScanner.scan
-            )
-        }
-        scanWorker = worker
+    func selectionDidChange() {
+        selectionSummary = imageItems.isEmpty ? nil : TinyPNGSelectionSummary(
+            imageCount: imageItems.count,
+            oversizedCount: imageItems.filter { $0.byteCount > TinyPNGInputScanner.maxUploadBytes }.count,
+            belowMinimumCount: imageItems.filter { $0.byteCount < minimumCompressionSizeBytes }.count
+        )
+    }
 
-        Task { @MainActor [weak self, selectionToken, worker] in
-            let outcome = await worker.result
-            guard let self,
-                  self.activeSelectionToken == selectionToken,
-                  !worker.isCancelled else {
-                return
-            }
+    func startSelectionProcessing() -> Task<Void, Never>? {
+        startRun()
+        return nil
+    }
 
-            scanWorker = nil
-            pendingScanURLs = []
-            isScanning = false
-            isRefreshingSelection = false
-            retainedSelectionItems = previousItems
-            guard case .success(let batch) = outcome else {
-                if case .failure(let error) = outcome {
-                    imageItems = []
-                    selectionSummary = nil
-                    selectedURLs = scannedURLs
-                    gitOptions.updateAvailability(false)
-                    reportGitScanFailure(error)
-                }
-                return
-            }
-
-            gitOptions.updateAvailability(batch.gitFilterAvailable)
-            let results = batch.scans
-            selectedURLs = scannedURLs
-            imageItems = []
-            selectionSummary = nil
-            var knownPaths = Set<String>()
-            var appendedItems: [TinyPNGImageItem] = []
-            for (index, result) in results.enumerated() {
-                let inputURL = scannedURLs[index]
-                let inputPath = ImageCompressionInputPath(root: inputURL)
-                for image in result.images where knownPaths.insert(image.url.path).inserted {
-                    if let queuedURLs, !queuedURLs.contains(image.url.resolvingSymlinksInPath()) { continue }
-                    appendedItems.append(
-                        TinyPNGImageItem(
-                            id: image.url,
-                            relativePath: inputPath.relativePath(for: image.url),
-                            byteCount: image.byteCount,
-                            status: self.shouldSkip(image.byteCount, minimumCompressionBytes: self.minimumCompressionSizeBytes)
-                                ? .skipped
-                                : .waiting
-                        )
-                    )
-                }
-            }
-
-            imageItems = retainingSelectionState(in: appendedItems, from: previousItems)
-            retainedSelectionItems = selectionHistory(merging: imageItems, into: previousItems)
-            guard !imageItems.isEmpty else {
-                operationStatus = selectedURLs.isEmpty ? "请选择图片或文件夹" : "已选择，等待开始"
-                operationStatusSystemImage = selectedURLs.isEmpty ? "photo.on.rectangle" : "checkmark.circle"
-                if batch.usesGitFilter && imageItems.isEmpty {
-                    reportEmptyGitSelection()
-                } else if !batch.usesGitFilter && results.allSatisfy({ $0.images.isEmpty }) {
-                    alertMessage = "新添加的路径中没有可压缩的 PNG、JPG、JPEG 或 WebP 图片。"
-                }
-                return
-            }
-
-            selectionSummary = TinyPNGSelectionSummary(
-                imageCount: imageItems.count,
-                oversizedCount: imageItems.filter { $0.byteCount > TinyPNGInputScanner.maxUploadBytes }.count,
-                belowMinimumCount: imageItems.filter { $0.byteCount < self.minimumCompressionSizeBytes }.count
-            )
-            operationStatus = "已选择，等待开始"
-            operationStatusSystemImage = "checkmark.circle"
-            if startAfterScan, !gitOnly || batch.usesGitFilter { startRun() }
-        }
-        return true
+    @discardableResult
+    func select(urls: [URL], refreshing: Bool = false, startAfterScan: Bool = false) -> Bool {
+        selectImages(urls: urls, refreshing: refreshing, startAfterScan: startAfterScan).accepted
     }
 
     func run() {
@@ -630,18 +505,7 @@ final class TinyPNGModel: ImageCompressionSelectionModel {
     }
 
     func stop() {
-        if isScanning {
-            gitOptions.cancelPendingChange()
-            scanWorker?.cancel()
-            scanWorker = nil
-            pendingScanURLs = []
-            isRefreshingSelection = false
-            activeSelectionToken = UUID()
-            isScanning = false
-            operationStatus = "已停止"
-            operationStatusSystemImage = "stop.circle"
-            return
-        }
+        if stopSelectionScan() { return }
 
         guard isRunning, !isStopping else { return }
         isStopping = true
@@ -658,23 +522,11 @@ final class TinyPNGModel: ImageCompressionSelectionModel {
 
     func clearSelection() {
         guard !isRunning, !isScanning, !isRestoring else { return }
-        scanWorker?.cancel()
-        scanWorker = nil
-        pendingScanURLs = []
-        activeSelectionToken = UUID()
-        selectedURLs = []
-        retainedSelectionItems = []
-        gitOptions.updateAvailability(false)
-        selectionSummary = nil
-        imageItems = []
+        clearSelectionState()
         previewOriginals = ImageCompressionOriginals()
-        nextManualSkipOrder = 0
         output = ""
         outputEventBuffer = ""
         outputDirectoryURL = nil
-        operationStatus = "请选择图片或文件夹"
-        operationStatusSystemImage = "photo.on.rectangle"
-        alertMessage = nil
     }
 
     func showError(_ message: String) {
@@ -692,7 +544,6 @@ final class TinyPNGModel: ImageCompressionSelectionModel {
         return nil
     }
 
-
     private func applyProcessEvents(from output: String) {
         for line in output.split(whereSeparator: \.isNewline) {
             applyProcessEventLine(String(line))
@@ -705,34 +556,6 @@ final class TinyPNGModel: ImageCompressionSelectionModel {
 
     private static func normalizedMinimumCompressionSizeKB(_ value: Int) -> Int {
         min(max(0, value), Self.maximumMinimumCompressionSizeKB)
-    }
-
-    private func shouldSkip(_ byteCount: Int64, minimumCompressionBytes: Int64) -> Bool {
-        byteCount > TinyPNGInputScanner.maxUploadBytes || byteCount < minimumCompressionBytes
-    }
-
-    private func refreshSkippedItems() {
-        guard !imageItems.isEmpty, !isRunning, !isScanning, !isRestoring else { return }
-        let minimumBytes = minimumCompressionSizeBytes
-        imageItems = imageItems.map { item in
-            switch item.status {
-            case .waiting, .skipped, .cancelled, .failed:
-                break
-            case .success, .working:
-                return item
-            }
-            var updated = item
-            updated.status = isCompressionEnabled(for: item) ? .waiting : .skipped
-            updated.compressedByteCount = nil
-            updated.compressionPercentage = nil
-            updated.elapsedSeconds = nil
-            return updated
-        }
-        selectionSummary = TinyPNGSelectionSummary(
-            imageCount: imageItems.count,
-            oversizedCount: imageItems.filter { $0.byteCount > TinyPNGInputScanner.maxUploadBytes }.count,
-            belowMinimumCount: imageItems.filter { $0.byteCount < minimumBytes }.count
-        )
     }
 
     private func appendProcessOutput(_ chunk: String) {

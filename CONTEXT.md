@@ -37,14 +37,14 @@ The configured lower bound for source image file size. Images smaller than this 
 The TinyPNG single-file upper bound of 5 MB. Images above this bound are skipped regardless of the minimum compression size.
 
 **Skipped image**:
-An image excluded before upload by the size rules or its per-image switch. Manually excluded images appear first in the skipped group, in the order they were excluded; switching one back on returns it to the pending group. The 5 MB upload limit cannot be overridden. In output-folder mode its original bytes are preserved; in replacement mode the source remains unchanged.
+An image excluded before upload by the size rules or its per-image switch. Both the pending/completed group and the skipped group sort by original file size, largest first; ties use natural relative-path order, then source path for stability. Switching an image back on returns it to its size-based position in the pending group. The 5 MB upload limit cannot be overridden. In output-folder mode its original bytes are preserved; in replacement mode the source remains unchanged.
 
 **Reset compression result**:
 Discard one completed result by restoring original bytes at its destination, then switch off compression and move it to the skipped group. Replacement mode restores the preserved source snapshot; output-folder mode replaces the result with an unchanged original. If restoration fails, keep the result state and report the error. Completed images keep their comparison action and are excluded from later compression runs until reset and manually enabled again.
 
 ## Shared Luban and WebP selection
 
-Luban and WebP use the same two groups, threshold defaults, per-image overrides, manual skip order, comparison, and Reset actions as TinyPNG. Luban has no upload-size limit. Existing WebP sources stay skipped and cannot be enabled for conversion. A WebP conversion that does not reduce file size also joins the skipped group and can be enabled again manually.
+All three tools share one selection state and transaction for input validation, adding roots, background scanning, Git eligibility, cancellation, state restoration, grouping, and size-based ordering. Their models only supply supported formats, item construction, tool-specific limits, summaries, and compression execution. Luban and WebP use the same two groups, threshold defaults, per-image overrides, comparison, and Reset actions as TinyPNG. Luban has no upload-size limit. Existing WebP sources stay skipped and cannot be enabled for conversion. A WebP conversion that does not reduce file size also joins the skipped group and can be enabled again manually.
 
 **Git-only selection**:
 Git ignore rules are mandatory in every selection mode, including ordinary scans and individual image inputs. Matching files are excluded even when already tracked by Git or manually enabled earlier; negation rules can explicitly include them again. Each image is checked against its own working tree, including nested ignore rules and repository exclusions. Non-repository images retain normal behavior. Starting any run rechecks ignore rules; an ordinary run only processes its previously displayed queue, without adding newly discovered files or earlier output copies. Ignore-check failures stop selection or processing rather than admitting unchecked files.

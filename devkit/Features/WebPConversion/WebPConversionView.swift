@@ -175,7 +175,6 @@ struct WebPImageItem: Identifiable, Equatable {
     var destinationPath: String? = nil
     var previewOriginalURL: URL? = nil
     var compressionOverride: Bool? = nil
-    var manualSkipOrder: Int? = nil
     var resultReplacedOriginal = false
 }
 
@@ -219,25 +218,8 @@ final class WebPConversionModel: ImageCompressionSelectionModel {
     private static let minimumCompressionSizeKey = "webp.minimumCompressionSizeKB.v2"
     private static let maximumSideLengthKey = "webp.maximumSideLength"
 
-    var selectedURLs: [URL] = []
+    let selectionState = ImageCompressionSelectionState<WebPImageItem>()
     var selectionSummary: WebPSelectionSummary?
-    var imageItems: [WebPImageItem] = []
-    private var gitOptions = ImageCompressionGitOptions()
-    var isGitFilterAvailable: Bool { gitOptions.isAvailable }
-    var onlyGitChangedImages: Bool {
-        get { gitOptions.isEnabled }
-        set {
-            let previous = gitOptions.isEnabled
-            gitOptions.setEnabled(newValue)
-            if previous != gitOptions.isEnabled, !selectedURLs.isEmpty {
-                select(urls: selectedURLs, refreshing: true)
-            }
-        }
-    }
-    var replaceOriginals: Bool {
-        get { gitOptions.replaceOriginals }
-        set { gitOptions.replaceOriginals = newValue }
-    }
 
     var quality: Int {
         didSet {
@@ -257,7 +239,7 @@ final class WebPConversionModel: ImageCompressionSelectionModel {
                 return
             }
             preferencesDefaults.set(normalized, forKey: Self.minimumCompressionSizeKey)
-            refreshSkippedItems()
+            refreshSelectionEligibility()
         }
     }
     var maximumSideLength: Int {
@@ -270,22 +252,15 @@ final class WebPConversionModel: ImageCompressionSelectionModel {
             preferencesDefaults.set(normalized, forKey: Self.maximumSideLengthKey)
         }
     }
-    var isScanning = false
     var isRunning = false
     var isStopping = false
     var isRestoring = false
-    var nextManualSkipOrder = 0
     var output = ""
     var operationStatus = "请选择图片或文件夹"
     var operationStatusSystemImage = "photo.on.rectangle"
     var alertMessage: String?
     var outputDirectoryURL: URL?
 
-    private var scanWorker: Task<ImageCompressionScanResult, Error>?
-    private var pendingScanURLs: [URL] = []
-    private var retainedSelectionItems: [WebPImageItem] = []
-    private var isRefreshingSelection = false
-    private var activeSelectionToken = UUID()
     private var outputEventBuffer = ""
     private var processCancellation: StreamingProcessCancellation?
     private let preferencesDefaults: UserDefaults
@@ -301,14 +276,6 @@ final class WebPConversionModel: ImageCompressionSelectionModel {
         )
         let storedMaximumSide = preferencesDefaults.object(forKey: Self.maximumSideLengthKey) as? Int
         self.maximumSideLength = max(0, storedMaximumSide ?? Self.defaultMaximumSideLength)
-    }
-
-    var canRun: Bool {
-        !selectedURLs.isEmpty
-            && imageItems.contains(where: { isCompressionEnabled(for: $0) && $0.status != .success })
-            && !isScanning
-            && !isRunning
-            && !isRestoring
     }
 
     var operationVerb: String { "转换" }
@@ -368,123 +335,38 @@ final class WebPConversionModel: ImageCompressionSelectionModel {
         )
     }
 
+    var scanConfiguration: ImageCompressionScanConfiguration {
+        ImageCompressionScanConfiguration(
+            supportedExtensions: WebPInputScanner.supportedExtensions, scan: WebPInputScanner.scan,
+            invalidInputMessage: "请选择文件夹，或选择 PNG、JPG、HEIC 等图片。",
+            emptyInputMessage: "新添加的路径中没有可转换的图片。"
+        )
+    }
+
+    func makeSelectionItem(_ image: ImageScannedImage, relativePath: String) -> WebPImageItem {
+        WebPImageItem(id: image.url, relativePath: relativePath, byteCount: image.byteCount, status: .waiting)
+    }
+
+    func prepareForSelectionScan() {
+        output = ""
+        outputEventBuffer = ""
+        outputDirectoryURL = nil
+    }
+
+    func selectionDidChange() {
+        selectionSummary = imageItems.isEmpty ? nil : Self.summary(
+            for: imageItems, minimumCompressionBytes: minimumCompressionSizeBytes
+        )
+    }
+
+    func startSelectionProcessing() -> Task<Void, Never>? {
+        startRun()
+        return nil
+    }
+
     @discardableResult
     func select(urls: [URL], refreshing: Bool = false, startAfterScan: Bool = false) -> Bool {
-        guard !isRunning, !isRestoring, !isRefreshingSelection else { return false }
-        let previousItems = selectionHistory(merging: imageItems, into: retainedSelectionItems)
-        // Revalidate the ordinary queue without adding newly discovered files or prior outputs.
-        let queuedURLs = startAfterScan && !onlyGitChangedImages
-            ? Set(imageItems.map { $0.id.resolvingSymlinksInPath() }) : nil
-        let standardizedURLs = urls.map(\.standardizedFileURL)
-        let effectiveURLs = effectiveScanRoots(standardizedURLs, history: previousItems)
-        // Existing inputs must all reach eligibility validation, including paths that disappeared.
-        let validURLs = refreshing ? standardizedURLs : zip(standardizedURLs, effectiveURLs)
-            .filter { WebPInputScanner.accepts($0.1) }.map(\.0)
-        guard !validURLs.isEmpty else {
-            showError("请选择文件夹，或选择 PNG、JPG、HEIC 等图片。")
-            return false
-        }
-        var knownRoots = Set((refreshing ? [] : selectedURLs + pendingScanURLs).map(\.path))
-        let initiallyAcceptedURLs = validURLs.filter { knownRoots.insert($0.path).inserted }
-        let acceptedURLs = initiallyAcceptedURLs.filter { url in
-            refreshing || !initiallyAcceptedURLs.contains { root in
-                root.path != url.path && url.path.hasPrefix(root.path + "/")
-            }
-        }
-
-        scanWorker?.cancel()
-        scanWorker = nil
-        isScanning = false
-        activeSelectionToken = UUID()
-        isRefreshingSelection = refreshing
-        let inputRoots = refreshing ? acceptedURLs : selectedURLs + pendingScanURLs + acceptedURLs
-        var seenRoots = Set<String>()
-        pendingScanURLs = inputRoots.filter { seenRoots.insert($0.path).inserted }
-        isScanning = true
-        operationStatus = "正在扫描图片"
-        operationStatusSystemImage = "arrow.triangle.2.circlepath"
-        alertMessage = nil
-
-        let selectionToken = UUID()
-        activeSelectionToken = selectionToken
-        // Include the previous pending batch when replacing an in-flight scan.
-        let scannedURLs = pendingScanURLs
-        let effectiveRoots = effectiveScanRoots(scannedURLs, history: previousItems)
-        let gitOnly = onlyGitChangedImages
-        let worker = Task.detached(priority: .userInitiated) {
-            try GitChangedImageScanner.scanSelection(
-                effectiveRoots, onlyGitChangedImages: gitOnly,
-                supportedExtensions: WebPInputScanner.supportedExtensions, scanImage: WebPInputScanner.scan
-            )
-        }
-        scanWorker = worker
-
-        Task { @MainActor [weak self, selectionToken, worker] in
-            let outcome = await worker.result
-            guard let self,
-                  self.activeSelectionToken == selectionToken,
-                  !worker.isCancelled else {
-                return
-            }
-
-            scanWorker = nil
-            pendingScanURLs = []
-            isScanning = false
-            isRefreshingSelection = false
-            retainedSelectionItems = previousItems
-            guard case .success(let batch) = outcome else {
-                if case .failure(let error) = outcome {
-                    imageItems = []
-                    selectionSummary = nil
-                    selectedURLs = scannedURLs
-                    gitOptions.updateAvailability(false)
-                    reportGitScanFailure(error)
-                }
-                return
-            }
-
-            gitOptions.updateAvailability(batch.gitFilterAvailable)
-            let results = batch.scans
-            selectedURLs = scannedURLs
-            imageItems = []
-            selectionSummary = nil
-            var knownPaths = Set<String>()
-            var appendedItems: [WebPImageItem] = []
-            for (index, result) in results.enumerated() {
-                let inputURL = scannedURLs[index]
-                let inputPath = ImageCompressionInputPath(root: inputURL)
-                for image in result.images where knownPaths.insert(image.url.path).inserted {
-                    if let queuedURLs, !queuedURLs.contains(image.url.resolvingSymlinksInPath()) { continue }
-                    appendedItems.append(
-                        WebPImageItem(
-                            id: image.url,
-                            relativePath: inputPath.relativePath(for: image.url),
-                            byteCount: image.byteCount,
-                            status: shouldSkipAtScan(image) ? .skipped : .waiting
-                        )
-                    )
-                }
-            }
-
-            imageItems = retainingSelectionState(in: appendedItems, from: previousItems)
-            retainedSelectionItems = selectionHistory(merging: imageItems, into: previousItems)
-            guard !imageItems.isEmpty else {
-                operationStatus = selectedURLs.isEmpty ? "请选择图片或文件夹" : "已选择，等待开始"
-                operationStatusSystemImage = selectedURLs.isEmpty ? "photo.on.rectangle" : "checkmark.circle"
-                if batch.usesGitFilter && imageItems.isEmpty {
-                    reportEmptyGitSelection()
-                } else if !batch.usesGitFilter && results.allSatisfy({ $0.images.isEmpty }) {
-                    alertMessage = "新添加的路径中没有可转换的图片。"
-                }
-                return
-            }
-
-            selectionSummary = Self.summary(for: imageItems, minimumCompressionBytes: minimumCompressionSizeBytes)
-            operationStatus = "已选择，等待开始"
-            operationStatusSystemImage = "checkmark.circle"
-            if startAfterScan, !gitOnly || batch.usesGitFilter { startRun() }
-        }
-        return true
+        selectImages(urls: urls, refreshing: refreshing, startAfterScan: startAfterScan).accepted
     }
 
     func run() {
@@ -654,18 +536,7 @@ final class WebPConversionModel: ImageCompressionSelectionModel {
     }
 
     func stop() {
-        if isScanning {
-            gitOptions.cancelPendingChange()
-            scanWorker?.cancel()
-            scanWorker = nil
-            pendingScanURLs = []
-            isRefreshingSelection = false
-            activeSelectionToken = UUID()
-            isScanning = false
-            operationStatus = "已停止"
-            operationStatusSystemImage = "stop.circle"
-            return
-        }
+        if stopSelectionScan() { return }
 
         guard isRunning, !isStopping else { return }
         isStopping = true
@@ -682,23 +553,11 @@ final class WebPConversionModel: ImageCompressionSelectionModel {
 
     func clearSelection() {
         guard !isRunning, !isScanning, !isRestoring else { return }
-        scanWorker?.cancel()
-        scanWorker = nil
-        pendingScanURLs = []
-        activeSelectionToken = UUID()
-        selectedURLs = []
-        retainedSelectionItems = []
-        gitOptions.updateAvailability(false)
-        selectionSummary = nil
-        imageItems = []
+        clearSelectionState()
         previewOriginals = ImageCompressionOriginals()
-        nextManualSkipOrder = 0
         output = ""
         outputEventBuffer = ""
         outputDirectoryURL = nil
-        operationStatus = "请选择图片或文件夹"
-        operationStatusSystemImage = "photo.on.rectangle"
-        alertMessage = nil
     }
 
     func showError(_ message: String) {
@@ -729,11 +588,6 @@ final class WebPConversionModel: ImageCompressionSelectionModel {
         )
     }
 
-
-    private func shouldSkipAtScan(_ image: ImageScannedImage) -> Bool {
-        image.isWebP || image.byteCount < minimumCompressionSizeBytes
-    }
-
     private func applyProcessEvents(from output: String) {
         for line in output.split(whereSeparator: \.isNewline) {
             applyProcessEventLine(String(line))
@@ -750,24 +604,6 @@ final class WebPConversionModel: ImageCompressionSelectionModel {
 
     private static func normalizedMinimumCompressionSizeKB(_ value: Int) -> Int {
         min(max(0, value), Self.maximumMinimumCompressionSizeKB)
-    }
-
-    private func refreshSkippedItems() {
-        guard !imageItems.isEmpty, !isRunning, !isScanning, !isRestoring else { return }
-        let minimumBytes = minimumCompressionSizeBytes
-        imageItems = imageItems.map { item in
-            switch item.status {
-            case .waiting, .skipped, .cancelled, .failed:
-                break
-            case .success, .working:
-                return item
-            }
-            var updated = item
-            updated.status = isCompressionEnabled(for: item) ? .waiting : .skipped
-            updated.clearResultMetrics()
-            return updated
-        }
-        selectionSummary = Self.summary(for: imageItems, minimumCompressionBytes: minimumBytes)
     }
 
     private func appendProcessOutput(_ chunk: String) {

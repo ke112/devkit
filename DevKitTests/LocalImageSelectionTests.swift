@@ -4,7 +4,7 @@ import Testing
 
 @MainActor
 struct LocalImageSelectionTests {
-    @Test func bothToolsPreserveManualOrderingAndThresholdOverrides() async throws {
+    @Test func bothToolsPreserveSizeOrderingAndThresholdOverrides() async throws {
         let defaults = try #require(UserDefaults(suiteName: "LocalSelection-\(UUID().uuidString)"))
         let a = URL(fileURLWithPath: "/tmp/a.png")
         let b = URL(fileURLWithPath: "/tmp/b.png")
@@ -16,7 +16,7 @@ struct LocalImageSelectionTests {
             LubanImageItem(id: small, relativePath: "small.png", byteCount: 1, status: .waiting)
         ]
         luban.minimumCompressionSizeKB = 1
-        await checkManualOrder(luban, a: a, b: b, small: small)
+        await checkSelectionOrder(luban, a: a, b: b, small: small)
         luban.minimumCompressionSizeKB = 100
         #expect(luban.imageItems.map(\.status) == [.skipped, .waiting, .waiting])
 
@@ -27,18 +27,18 @@ struct LocalImageSelectionTests {
             WebPImageItem(id: small, relativePath: "small.png", byteCount: 1, status: .waiting)
         ]
         webp.minimumCompressionSizeKB = 1
-        await checkManualOrder(webp, a: a, b: b, small: small)
+        await checkSelectionOrder(webp, a: a, b: b, small: small)
         webp.minimumCompressionSizeKB = 100
         #expect(webp.imageItems.map(\.status) == [.skipped, .waiting, .waiting])
     }
 
-    private func checkManualOrder<M: ImageCompressionSelectionModel>(
+    private func checkSelectionOrder<M: ImageCompressionSelectionModel>(
         _ model: M, a: URL, b: URL, small: URL
     ) async {
         #expect(model.displayGroups[1].tasks.map(\.id) == [small])
         await model.setCompressionEnabled(false, for: b)
         await model.setCompressionEnabled(false, for: a)
-        #expect(model.displayGroups[1].tasks.map(\.id) == [b, a, small])
+        #expect(model.displayGroups[1].tasks.map(\.id) == [a, b, small])
         await model.setCompressionEnabled(true, for: b)
         await model.setCompressionEnabled(true, for: small)
         #expect(model.displayGroups[0].tasks.map(\.id) == [b, small])

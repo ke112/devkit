@@ -16,7 +16,6 @@ struct LubanImageItem: Identifiable, Equatable {
     var destinationPath: String?
     var previewOriginalURL: URL? = nil
     var compressionOverride: Bool? = nil
-    var manualSkipOrder: Int? = nil
     var resultReplacedOriginal = false
 }
 
@@ -59,24 +58,7 @@ final class LubanCompressionModel: ImageCompressionSelectionModel {
     static let maximumMinimumCompressionSizeKB = Int(Int64.max / 1024)
     private static let minimumCompressionSizeKey = "luban.minimumCompressionSizeKB"
 
-    var selectedURLs: [URL] = []
-    var imageItems: [LubanImageItem] = []
-    private var gitOptions = ImageCompressionGitOptions()
-    var isGitFilterAvailable: Bool { gitOptions.isAvailable }
-    var onlyGitChangedImages: Bool {
-        get { gitOptions.isEnabled }
-        set {
-            let previous = gitOptions.isEnabled
-            gitOptions.setEnabled(newValue)
-            if previous != gitOptions.isEnabled, !selectedURLs.isEmpty {
-                select(urls: selectedURLs, refreshing: true)
-            }
-        }
-    }
-    var replaceOriginals: Bool {
-        get { gitOptions.replaceOriginals }
-        set { gitOptions.replaceOriginals = newValue }
-    }
+    let selectionState = ImageCompressionSelectionState<LubanImageItem>()
 
     var minimumCompressionSizeKB: Int {
         didSet {
@@ -86,24 +68,17 @@ final class LubanCompressionModel: ImageCompressionSelectionModel {
                 return
             }
             preferencesDefaults.set(normalized, forKey: Self.minimumCompressionSizeKey)
-            refreshSkippedItems()
+            refreshSelectionEligibility()
         }
     }
-    var isScanning = false
     var isRunning = false
     var isStopping = false
     var isRestoring = false
-    var nextManualSkipOrder = 0
     var operationStatus = "请选择图片或文件夹"
     var operationStatusSystemImage = "photo.on.rectangle"
     var alertMessage: String?
     var outputDirectoryURL: URL?
 
-    private var scanTask: Task<ImageCompressionScanResult, Error>?
-    private var pendingScanURLs: [URL] = []
-    private var retainedSelectionItems: [LubanImageItem] = []
-    private var isRefreshingSelection = false
-    private var activeSelectionToken = UUID()
     private var compressionTask: Task<Void, Never>?
     private let preferencesDefaults: UserDefaults
     private let scanImage: @Sendable (URL) -> ImageScanResult
@@ -127,16 +102,6 @@ final class LubanCompressionModel: ImageCompressionSelectionModel {
 
     private static func normalizedMinimumCompressionSizeKB(_ value: Int) -> Int {
         min(max(0, value), Self.maximumMinimumCompressionSizeKB)
-    }
-
-    var canRun: Bool {
-        !selectedURLs.isEmpty
-            && imageItems.contains {
-                $0.status == .waiting || ($0.status != .success && $0.status != .skipped && isCompressionEnabled(for: $0))
-            }
-            && !isScanning
-            && !isRunning
-            && !isRestoring
     }
 
     var isError: Bool { operationStatusSystemImage == "xmark.circle" }
@@ -166,109 +131,24 @@ final class LubanCompressionModel: ImageCompressionSelectionModel {
         )
     }
 
+    var scanConfiguration: ImageCompressionScanConfiguration {
+        ImageCompressionScanConfiguration(
+            supportedExtensions: LubanInputScanner.supportedExtensions, scan: scanImage,
+            invalidInputMessage: "请选择文件夹，或选择 PNG、JPG、JPEG、WebP、HEIC 等图片。"
+        )
+    }
+
+    func makeSelectionItem(_ image: ImageScannedImage, relativePath: String) -> LubanImageItem {
+        LubanImageItem(id: image.url, relativePath: relativePath, byteCount: image.byteCount, status: .waiting)
+    }
+
+    func startSelectionProcessing() -> Task<Void, Never>? {
+        startRun()
+    }
+
     @discardableResult
     func select(urls: [URL], refreshing: Bool = false, startAfterScan: Bool = false) -> Task<Void, Never>? {
-        guard !isRunning, !isRestoring, !isRefreshingSelection else { return nil }
-        let previousItems = selectionHistory(merging: imageItems, into: retainedSelectionItems)
-        // Revalidate the ordinary queue without adding newly discovered files or prior outputs.
-        let queuedURLs = startAfterScan && !onlyGitChangedImages
-            ? Set(imageItems.map { $0.id.resolvingSymlinksInPath() }) : nil
-        let standardizedURLs = urls.map(\.standardizedFileURL)
-        let effectiveURLs = effectiveScanRoots(standardizedURLs, history: previousItems)
-        // Existing inputs must all reach eligibility validation, including paths that disappeared.
-        let validURLs = refreshing ? standardizedURLs : zip(standardizedURLs, effectiveURLs)
-            .filter { LubanInputScanner.accepts($0.1) }.map(\.0)
-        guard !validURLs.isEmpty else {
-            alertMessage = "请选择文件夹，或选择 PNG、JPG、JPEG、WebP、HEIC 等图片。"
-            return nil
-        }
-
-        var knownRoots = Set((refreshing ? [] : selectedURLs + pendingScanURLs).map(\.path))
-        let acceptedURLs = validURLs.filter { knownRoots.insert($0.path).inserted }
-
-        scanTask?.cancel()
-        isScanning = true
-        activeSelectionToken = UUID()
-        operationStatus = "正在扫描图片"
-        operationStatusSystemImage = "arrow.triangle.2.circlepath"
-        alertMessage = nil
-
-        let selectionToken = activeSelectionToken
-        isRefreshingSelection = refreshing
-        let inputRoots = refreshing ? acceptedURLs : selectedURLs + pendingScanURLs + acceptedURLs
-        var seenRoots = Set<String>()
-        pendingScanURLs = inputRoots.filter { seenRoots.insert($0.path).inserted }
-        let roots = pendingScanURLs
-        let effectiveRoots = effectiveScanRoots(roots, history: previousItems)
-        let scanImage = scanImage
-        let gitOnly = onlyGitChangedImages
-        scanTask = Task.detached(priority: .userInitiated) {
-            try GitChangedImageScanner.scanSelection(
-                effectiveRoots, onlyGitChangedImages: gitOnly,
-                supportedExtensions: LubanInputScanner.supportedExtensions, scanImage: scanImage
-            )
-        }
-
-        guard let scanTask = scanTask else { return nil }
-        return Task { @MainActor [weak self, selectionToken, scanTask] in
-            let outcome = await scanTask.result
-            guard let self, self.activeSelectionToken == selectionToken, !scanTask.isCancelled else { return }
-            self.scanTask = nil
-            self.pendingScanURLs = []
-            self.isScanning = false
-            self.isRefreshingSelection = false
-            self.retainedSelectionItems = previousItems
-            guard case .success(let batch) = outcome else {
-                if case .failure(let error) = outcome {
-                    self.imageItems = []
-                    self.selectedURLs = roots
-                    self.gitOptions.updateAvailability(false)
-                    self.reportGitScanFailure(error)
-                }
-                return
-            }
-
-            self.gitOptions.updateAvailability(batch.gitFilterAvailable)
-            let results = batch.scans
-            self.selectedURLs = roots
-            self.imageItems = []
-            var knownPaths = Set<String>()
-            var appended: [LubanImageItem] = []
-            for (index, result) in results.enumerated() {
-                let inputURL = roots[index]
-                let inputPath = ImageCompressionInputPath(root: inputURL)
-                for image in result.images where knownPaths.insert(image.url.path).inserted {
-                    if let queuedURLs, !queuedURLs.contains(image.url.resolvingSymlinksInPath()) { continue }
-                    appended.append(LubanImageItem(
-                        id: image.url,
-                        relativePath: inputPath.relativePath(for: image.url),
-                        byteCount: image.byteCount,
-                        status: image.byteCount >= Int64(self.minimumCompressionSizeKB) * 1024 ? .waiting : .skipped,
-                        compressedByteCount: nil,
-                        compressionPercentage: nil
-                    ))
-                }
-            }
-
-            self.imageItems = self.retainingSelectionState(in: appended, from: previousItems)
-            self.retainedSelectionItems = self.selectionHistory(merging: self.imageItems, into: previousItems)
-            guard !self.imageItems.isEmpty else {
-                if self.selectedURLs.isEmpty {
-                    self.operationStatus = "请选择图片或文件夹"
-                    self.operationStatusSystemImage = "photo.on.rectangle"
-                } else {
-                    self.operationStatus = "已选择，等待开始"
-                    self.operationStatusSystemImage = "checkmark.circle"
-                }
-                if batch.usesGitFilter && self.imageItems.isEmpty { self.reportEmptyGitSelection() }
-                return
-            }
-            self.operationStatus = "已选择，等待开始"
-            self.operationStatusSystemImage = "checkmark.circle"
-            if startAfterScan, !gitOnly || batch.usesGitFilter {
-                await self.startRun()?.value
-            }
-        }
+        selectImages(urls: urls, refreshing: refreshing, startAfterScan: startAfterScan).completion
     }
 
     @discardableResult
@@ -435,18 +315,7 @@ final class LubanCompressionModel: ImageCompressionSelectionModel {
     }
 
     func stop() {
-        if isScanning {
-            gitOptions.cancelPendingChange()
-            activeSelectionToken = UUID()
-            scanTask?.cancel()
-            scanTask = nil
-            pendingScanURLs = []
-            isRefreshingSelection = false
-            isScanning = false
-            operationStatus = "已停止"
-            operationStatusSystemImage = "stop.circle"
-            return
-        }
+        if stopSelectionScan() { return }
         guard isRunning, !isStopping else { return }
         isStopping = true
         operationStatus = "正在停止"
@@ -462,20 +331,9 @@ final class LubanCompressionModel: ImageCompressionSelectionModel {
 
     func clearSelection() {
         guard !isRunning, !isScanning, !isRestoring else { return }
-        scanTask?.cancel()
-        scanTask = nil
-        activeSelectionToken = UUID()
-        pendingScanURLs = []
-        selectedURLs = []
-        retainedSelectionItems = []
-        gitOptions.updateAvailability(false)
-        imageItems = []
+        clearSelectionState()
         previewOriginals = ImageCompressionOriginals()
-        nextManualSkipOrder = 0
         outputDirectoryURL = nil
-        operationStatus = "请选择图片或文件夹"
-        operationStatusSystemImage = "photo.on.rectangle"
-        alertMessage = nil
     }
 
     func showError(_ message: String) {
@@ -525,18 +383,6 @@ final class LubanCompressionModel: ImageCompressionSelectionModel {
         }
         return destinations
     }
-
-    private func refreshSkippedItems() {
-        guard !isRunning, !isScanning, !isRestoring else { return }
-        imageItems = imageItems.map { item in
-            guard item.status != .success, item.status != .working else { return item }
-            var updated = item
-            updated.status = isCompressionEnabled(for: item) ? .waiting : .skipped
-            updated.clearResultMetrics()
-            return updated
-        }
-    }
-
 
     private static func fileTimestamp() -> String {
         let formatter = DateFormatter()

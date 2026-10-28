@@ -10,13 +10,13 @@ struct TinyPNGSelectionTests {
                          byteCount: bytes, status: status)
     }
 
-    @Test func manualSkipsLeadAutomaticSkipsInOperationOrderAndCanReturn() async throws {
+    @Test func manualSkipsUseSizeAndFilenameOrderAndCanReturn() async throws {
         let model = TinyPNGModel(preferencesDefaults: try isolatedDefaults())
         model.minimumCompressionSizeKB = 50
         model.imageItems = [item("automatic", bytes: 1, status: .skipped), item("first"), item("second")]
         await model.setCompressionEnabled(false, for: model.imageItems[2].id)
         await model.setCompressionEnabled(false, for: model.imageItems[1].id)
-        #expect(model.displayGroups[1].tasks.map(\.title) == ["second.png", "first.png", "automatic.png"])
+        #expect(model.displayGroups[1].tasks.map(\.title) == ["first.png", "second.png", "automatic.png"])
         #expect(model.displayGroups[1].tasks.allSatisfy { $0.compressionEnabled == false })
 
         await model.setCompressionEnabled(true, for: model.imageItems[2].id)
@@ -36,7 +36,8 @@ struct TinyPNGSelectionTests {
         #expect(model.imageItems.map(\.status) == [.waiting, .skipped, .skipped, .skipped])
         await model.setCompressionEnabled(true, for: model.imageItems[3].id)
         #expect(!model.isCompressionEnabled(for: model.imageItems[3]))
-        let oversized = try #require(model.displayGroups[1].tasks.last)
+        let oversized = try #require(model.displayGroups[1].tasks.first)
+        #expect(oversized.id == model.imageItems[3].id)
         #expect(!oversized.compressionToggleAllowed)
         model.minimumCompressionSizeKB = 0
         #expect(model.imageItems.map(\.status) == [.waiting, .skipped, .waiting, .skipped])
