@@ -56,32 +56,32 @@ struct CompressionSafetyTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let source = directory.appendingPathComponent("source.png")
+        let nested = directory.appendingPathComponent("nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        let source = nested.appendingPathComponent("source.png")
         let original = Data([137, 80, 78, 71, 1, 2, 3])
         try original.write(to: source)
+        let compressible = directory.appendingPathComponent("compressible.png")
+        try pngFixture().write(to: compressible)
         let suiteName = "DevKitTests-Luban-\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let model = LubanCompressionModel(preferencesDefaults: defaults, outputBaseDirectory: directory)
         model.minimumCompressionSizeKB = 1
-        model.selectedURLs = [source]
-        // Keep outputs isolated even when other tests use the same timestamp.
-        model.imageItems = [LubanImageItem(
-            id: source, relativePath: "\(UUID().uuidString)/source.png", byteCount: Int64(original.count),
-            status: .waiting
-        )]
+        model.select(urls: [directory])
+        while model.isScanning { await Task.yield() }
         let worker = try #require(model.run())
-        let output = try #require(model.outputDirectoryURL)
-        let relativeDirectory = output.appendingPathComponent(model.imageItems[0].relativePath).deletingLastPathComponent()
-        defer { try? FileManager.default.removeItem(at: relativeDirectory) }
         await worker.value
+        let output = try #require(model.outputDirectoryURL)
         #expect(!model.isRunning)
-        let item = try #require(model.imageItems.first)
+        let item = try #require(model.imageItems.first { $0.id.resolvingSymlinksInPath() == source.resolvingSymlinksInPath() })
         #expect(item.status == .skipped)
         let result = URL(fileURLWithPath: try #require(item.destinationPath))
         #expect(result.pathExtension == "png")
+        #expect(result == output.appendingPathComponent("nested/source.png"))
         #expect(try Data(contentsOf: result) == original)
         #expect(try Data(contentsOf: source) == original)
+        #expect(model.imageItems.first { $0.id.resolvingSymlinksInPath() == compressible.resolvingSymlinksInPath() }?.status == .success)
     }
 
     @Test @MainActor func lubanCompressionCannotOverwriteSkippedSameNamedJPEG() async throws {
@@ -91,6 +91,37 @@ struct CompressionSafetyTests {
         let skipped = directory.appendingPathComponent("photo.jpg")
         let skippedBytes = Data("unchanged-jpeg".utf8)
         try skippedBytes.write(to: skipped)
+        let pngBytes = try pngFixture()
+        #expect(pngBytes.count > 1024)
+        let compressed = directory.appendingPathComponent("photo.png")
+        try pngBytes.write(to: compressed)
+        let suiteName = "DevKitTests-Luban-Collision-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = LubanCompressionModel(preferencesDefaults: defaults, outputBaseDirectory: directory)
+        model.minimumCompressionSizeKB = 1
+        // Put compression first to ensure name reservation does not depend on processing order.
+        model.select(urls: [compressed, skipped])
+        while model.isScanning { await Task.yield() }
+        let worker = try #require(model.run())
+        await worker.value
+        #expect(!model.isRunning)
+        let completedItem = try #require(model.imageItems.first { $0.id.resolvingSymlinksInPath() == compressed.resolvingSymlinksInPath() })
+        let skippedItem = try #require(model.imageItems.first { $0.id.resolvingSymlinksInPath() == skipped.resolvingSymlinksInPath() })
+        #expect(completedItem.status == .success)
+        #expect(skippedItem.status == .skipped)
+        let result = URL(fileURLWithPath: try #require(completedItem.destinationPath))
+        let preserved = URL(fileURLWithPath: try #require(skippedItem.destinationPath))
+        #expect(result != preserved)
+        #expect(result.lastPathComponent == "photo_2.jpg")
+        #expect(preserved.lastPathComponent == "photo.jpg")
+        #expect(try Data(contentsOf: preserved) == skippedBytes)
+        #expect(NSImage(contentsOf: result) != nil)
+        #expect(try Data(contentsOf: skipped) == skippedBytes)
+        #expect(try Data(contentsOf: compressed) == pngBytes)
+    }
+
+    @MainActor private func pngFixture() throws -> Data {
         let bitmap = try #require(NSBitmapImageRep(
             bitmapDataPlanes: nil, pixelsWide: 64, pixelsHigh: 64, bitsPerSample: 8,
             samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
@@ -102,35 +133,7 @@ struct CompressionSafetyTests {
             seed = seed &* 1_664_525 &+ 1_013_904_223
             pixels[index] = UInt8(truncatingIfNeeded: seed >> 16)
         }
-        let pngBytes = try #require(bitmap.representation(using: .png, properties: [:]))
-        #expect(pngBytes.count > 1024)
-        let compressed = directory.appendingPathComponent("photo.png")
-        try pngBytes.write(to: compressed)
-        let suiteName = "DevKitTests-Luban-Collision-\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-        let model = LubanCompressionModel(preferencesDefaults: defaults, outputBaseDirectory: directory)
-        model.minimumCompressionSizeKB = 1
-        model.selectedURLs = [skipped, compressed]
-        // Put compression first to ensure name reservation does not depend on processing order.
-        model.imageItems = [
-            LubanImageItem(id: compressed, relativePath: "photo.png", byteCount: Int64(pngBytes.count), status: .waiting),
-            LubanImageItem(id: skipped, relativePath: "photo.jpg", byteCount: Int64(skippedBytes.count), status: .waiting)
-        ]
-        let worker = try #require(model.run())
-        await worker.value
-        #expect(!model.isRunning)
-        #expect(model.imageItems[0].status == .success)
-        #expect(model.imageItems[1].status == .skipped)
-        let result = URL(fileURLWithPath: try #require(model.imageItems[0].destinationPath))
-        let preserved = URL(fileURLWithPath: try #require(model.imageItems[1].destinationPath))
-        #expect(result != preserved)
-        #expect(result.lastPathComponent == "photo_2.jpg")
-        #expect(preserved.lastPathComponent == "photo.jpg")
-        #expect(try Data(contentsOf: preserved) == skippedBytes)
-        #expect(NSImage(contentsOf: result) != nil)
-        #expect(try Data(contentsOf: skipped) == skippedBytes)
-        #expect(try Data(contentsOf: compressed) == pngBytes)
+        return try #require(bitmap.representation(using: .png, properties: [:]))
     }
 
     @Test func videoFallbackKeepsContainerExtensionAndAvoidsExistingFiles() throws {

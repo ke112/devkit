@@ -4,6 +4,259 @@ import Testing
 
 @MainActor
 struct GitChangedImageScannerTests {
+    @Test(arguments: [false, true])
+    func excludedDirectoryAliasCannotAdmitDirectChildImages(gitOnly: Bool) throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try write("assets/deep/image.png", in: directory)
+        try FileManager.default.createSymbolicLink(
+            at: directory.appendingPathComponent("build"),
+            withDestinationURL: directory.appendingPathComponent("assets", isDirectory: true)
+        )
+        let source = directory.appendingPathComponent("build/deep/image.png")
+        let batch = try GitChangedImageScanner.scanSelection(
+            [source], onlyGitChangedImages: gitOnly, supportedExtensions: ["png"], scanImage: Self.ordinaryScan
+        )
+        #expect(batch.scans[0].images.isEmpty)
+    }
+
+    @Test(arguments: [false, true], ["DerivedData", "Packages"])
+    func nestedWorktreeInsideExcludedDirectoryCannotBypassDirectoryRules(gitOnly: Bool, excludedName: String) throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = directory.appendingPathComponent("\(excludedName)/dependencies/repo", isDirectory: true)
+        try initializeRepository(repository)
+        try write("image.png", in: repository)
+        for root in [repository, repository.appendingPathComponent("image.png")] {
+            let batch = try GitChangedImageScanner.scanSelection(
+                [root], onlyGitChangedImages: gitOnly, supportedExtensions: ["png"], scanImage: Self.ordinaryScan
+            )
+            #expect(batch.scans[0].images.isEmpty)
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func filesystemRootAndNonRepositoryDiscoveryTerminateWithoutEnumeratingRoot(gitOnly: Bool) throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("image.png")
+        try write("image.png", in: directory)
+        let filesystemRoot = URL(fileURLWithPath: "/", isDirectory: true)
+        #expect(try !GitChangedImageScanner.canFilter([filesystemRoot]))
+        let fixture = ImageScannedImage(url: source, byteCount: 11)
+        // Supply an isolated fixture; this test must never enumerate the user's filesystem root.
+        let result = try GitChangedImageScanner.scanSelection(
+            [filesystemRoot], onlyGitChangedImages: gitOnly, supportedExtensions: ["png"],
+            scanImage: { _ in ImageScanResult(images: [fixture]) }
+        )
+        #expect(!result.gitFilterAvailable && !result.usesGitFilter)
+        #expect(result.scans[0].images.map(\.url) == [source])
+    }
+
+    @Test(arguments: [false, true])
+    func generatedDirectoriesAreAlwaysExcludedForGitAndOutsideInputs(gitOnly: Bool) throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for isRepository in [false, true] {
+            let root = directory.appendingPathComponent(isRepository ? "repo" : "outside", isDirectory: true)
+            if isRepository { try initializeRepository(root) }
+            let allowed = ["visible.png", "build.png", "tmp.png", "DerivedData.png"]
+            let excluded = ["build/image.png", "nested/BUILD/image.png", "tmp/image.png",
+                            "deep/TmP/image.png", "DerivedData/image.png", "nested/dErIvEdDaTa/deep/image.png", "Packages/Library/image.png", "nested/pAcKaGeS/Library/image.png"]
+            for name in allowed + excluded { try write(name, in: root) }
+            let rawImages = (allowed + excluded).map {
+                ImageScannedImage(url: root.appendingPathComponent($0), byteCount: 11)
+            }
+            let result = try GitChangedImageScanner.scanSelection(
+                [root], onlyGitChangedImages: gitOnly, supportedExtensions: ["png"],
+                scanImage: { _ in ImageScanResult(images: rawImages) }
+            )
+            #expect(Set(result.scans[0].images.map(\.url.lastPathComponent)) == Set(allowed))
+            #expect(result.scans[0].images.count == allowed.count)
+            #expect(result.gitFilterAvailable == isRepository)
+
+            for path in excluded {
+                let file = root.appendingPathComponent(path)
+                for directRoot in [file, file.deletingLastPathComponent()] {
+                    let direct = try GitChangedImageScanner.scanSelection(
+                        [directRoot], onlyGitChangedImages: gitOnly, supportedExtensions: ["png"],
+                        scanImage: { _ in
+                            Issue.record("Excluded generated directories must be rejected before raw scanning")
+                            return ImageScanResult(images: [ImageScannedImage(url: file, byteCount: 11)])
+                        }
+                    )
+                    #expect(direct.scans[0].images.isEmpty)
+                }
+            }
+            if isRepository {
+                let directGit = try GitChangedImageScanner.scan([root], supportedExtensions: ["png"])
+                #expect(Set(directGit[0].images.map(\.url.lastPathComponent)) == Set(allowed))
+            }
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func ignoreRulesAlwaysExcludeImagesIncludingTrackedFilesAndDirectInputs(gitOnly: Bool) throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try initializeRepository(directory)
+        try write("tracked.png", in: directory)
+        try write("clean.png", in: directory)
+        try git(["add", "."], in: directory)
+        try commit(in: directory)
+        try write(".agent-figma-checkin/\n*.blocked.png\n!keep.blocked.png\ntracked.png\n", as: ".gitignore", in: directory)
+        try write("*.png\n!keep.png\n", as: "nested/.gitignore", in: directory)
+        try write("info-only.png\n", as: ".git/info/exclude", in: directory)
+        try write("tracked.png", in: directory, content: "tracked-but-now-ignored")
+        for name in [".agent-figma-checkin/screen.png", "ignored 中文\n.blocked.png", "keep.blocked.png",
+                     "nested/skip.png", "nested/keep.png", "info-only.png", "visible.png"] {
+            try write(name, in: directory)
+        }
+        let batch = try GitChangedImageScanner.scanSelection(
+            [directory], onlyGitChangedImages: gitOnly, supportedExtensions: ["png"], scanImage: Self.ordinaryScan
+        )
+        #expect(batch.gitFilterAvailable && batch.usesGitFilter == gitOnly)
+        var expected: Set<String> = ["keep.blocked.png", "nested/keep.png", "visible.png"]
+        if !gitOnly { expected.insert("clean.png") }
+        #expect(Set(batch.scans[0].images.map { String($0.url.resolvingSymlinksInPath().path.dropFirst(directory.resolvingSymlinksInPath().path.count + 1)) }) == expected)
+
+        for path in [".agent-figma-checkin", ".agent-figma-checkin/screen.png", "tracked.png", "nested/skip.png"] {
+            let direct = try GitChangedImageScanner.scanSelection(
+                [directory.appendingPathComponent(path)], onlyGitChangedImages: gitOnly,
+                supportedExtensions: ["png"], scanImage: Self.ordinaryScan
+            )
+            #expect(direct.scans[0].images.isEmpty)
+        }
+        let directGitScan = try GitChangedImageScanner.scan([directory], supportedExtensions: ["png"])
+        #expect(!directGitScan[0].images.contains { $0.url.lastPathComponent == "tracked.png" })
+    }
+
+    @Test(arguments: [false, true])
+    func parentSelectionFindsEachRepositoryAndWorktreeWhileKeepingOutsideImages(gitOnly: Bool) throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = directory.appendingPathComponent("first", isDirectory: true)
+        let second = directory.appendingPathComponent("second", isDirectory: true)
+        let worktree = directory.appendingPathComponent("worktree", isDirectory: true)
+        for repository in [first, second] {
+            try initializeRepository(repository)
+            try write("hidden.png\n", as: ".gitignore", in: repository)
+            try write("visible.png", in: repository)
+            try write("hidden.png", in: repository)
+        }
+        try git(["add", "."], in: first)
+        try commit(in: first)
+        try git(["worktree", "add", "--detach", worktree.path], in: first)
+        try write("hidden.png", in: worktree)
+        try write("info-only.png\n", as: ".git/info/exclude", in: first)
+        try write("info-only.png", in: first)
+        try write("info-only.png", in: worktree)
+        try write("outside.png", in: directory)
+
+        let parent = try GitChangedImageScanner.scanSelection(
+            [directory], onlyGitChangedImages: gitOnly, supportedExtensions: ["png"], scanImage: Self.ordinaryScan
+        )
+        #expect(!parent.gitFilterAvailable && !parent.usesGitFilter)
+        #expect(Set(parent.scans[0].images.map { String($0.url.resolvingSymlinksInPath().path.dropFirst(directory.resolvingSymlinksInPath().path.count + 1)) }) == [
+            "first/visible.png", "second/visible.png", "worktree/visible.png", "outside.png"
+        ])
+        let mixed = try GitChangedImageScanner.scanSelection(
+            [first, second, worktree, directory.appendingPathComponent("outside.png")],
+            onlyGitChangedImages: gitOnly, supportedExtensions: ["png"], scanImage: Self.ordinaryScan
+        )
+        #expect(!mixed.gitFilterAvailable && !mixed.usesGitFilter)
+        #expect(mixed.scans.flatMap(\.images).count == 4)
+        #expect(mixed.scans.flatMap(\.images).allSatisfy { ["visible.png", "outside.png"].contains($0.url.lastPathComponent) })
+    }
+
+    @Test func failingIgnoreCheckDoesNotPassImagesThroughInNormalMode() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try initializeRepository(directory)
+        try write("image.png", in: directory)
+        let invalidExcludesFile = directory.appendingPathComponent("exclude-directory", isDirectory: true)
+        try FileManager.default.createDirectory(at: invalidExcludesFile, withIntermediateDirectories: true)
+        try git(["config", "core.excludesFile", invalidExcludesFile.path], in: directory)
+        #expect(try GitChangedImageScanner.canFilter([directory]))
+        do {
+            _ = try GitChangedImageScanner.scanSelection(
+                [directory], onlyGitChangedImages: false, supportedExtensions: ["png"], scanImage: Self.ordinaryScan
+            )
+            Issue.record("A failed check-ignore must not permit unchecked images")
+        } catch {
+            #expect(error.localizedDescription.contains("exclude"))
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func unreadableSymlinkIgnoreRulesFailClosedEvenWhenGitExitsOne(gitOnly: Bool) throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try initializeRepository(directory)
+        try write("image.png", in: directory)
+        try write("image.png\n", as: "ignore-rules", in: directory)
+        try FileManager.default.createSymbolicLink(
+            at: directory.appendingPathComponent(".gitignore"),
+            withDestinationURL: directory.appendingPathComponent("ignore-rules")
+        )
+        do {
+            _ = try GitChangedImageScanner.scanSelection(
+                [directory], onlyGitChangedImages: gitOnly, supportedExtensions: ["png"], scanImage: Self.ordinaryScan
+            )
+            Issue.record("Unreadable ignore rules must not allow unchecked images into the queue")
+        } catch {
+            #expect(error.localizedDescription.contains(".gitignore"))
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func ignoredSymlinkSourcesCannotBypassRulesThroughOutsideTargets(gitOnly: Bool) throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = directory.appendingPathComponent("repo", isDirectory: true)
+        let outside = directory.appendingPathComponent("outside", isDirectory: true)
+        try initializeRepository(repository)
+        try write("image.png", in: outside)
+        try write("visible.png", in: repository)
+        try write("ignored-link.png\nignored-link-dir/\n", as: ".gitignore", in: repository)
+        let fileLink = repository.appendingPathComponent("ignored-link.png")
+        let directoryLink = repository.appendingPathComponent("ignored-link-dir", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: fileLink, withDestinationURL: outside.appendingPathComponent("image.png"))
+        try FileManager.default.createSymbolicLink(at: directoryLink, withDestinationURL: outside)
+
+        for root in [fileLink, directoryLink, directoryLink.appendingPathComponent("image.png")] {
+            let batch = try GitChangedImageScanner.scanSelection(
+                [root], onlyGitChangedImages: gitOnly, supportedExtensions: ["png"], scanImage: Self.ordinaryScan
+            )
+            #expect(!batch.gitFilterAvailable && !batch.usesGitFilter)
+            #expect(batch.scans[0].images.isEmpty)
+        }
+        let entireRepository = try GitChangedImageScanner.scanSelection(
+            [repository], onlyGitChangedImages: gitOnly, supportedExtensions: ["png"], scanImage: Self.ordinaryScan
+        )
+        #expect(entireRepository.scans[0].images.map(\.url.lastPathComponent) == ["visible.png"])
+        let ordinaryOutsideImage = try GitChangedImageScanner.scanSelection(
+            [outside.appendingPathComponent("image.png")], onlyGitChangedImages: gitOnly,
+            supportedExtensions: ["png"], scanImage: Self.ordinaryScan
+        )
+        #expect(ordinaryOutsideImage.scans[0].images.count == 1)
+    }
+
+    @Test(arguments: [false, true])
+    func systemTemporaryDirectoryAliasAboveRepositoryRemainsUsable(gitOnly: Bool) throws {
+        let repository = URL(fileURLWithPath: "/tmp/GitIgnoreAliasTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: repository) }
+        try initializeRepository(repository)
+        try write("hidden.png\n", as: ".gitignore", in: repository)
+        try write("hidden.png", in: repository)
+        try write("visible.png", in: repository)
+        let batch = try GitChangedImageScanner.scanSelection(
+            [repository], onlyGitChangedImages: gitOnly, supportedExtensions: ["png"], scanImage: Self.ordinaryScan
+        )
+        #expect(batch.gitFilterAvailable && batch.usesGitFilter == gitOnly)
+        #expect(batch.scans[0].images.map(\.url.lastPathComponent) == ["visible.png"])
+    }
+
     @Test func filterEligibilityRequiresEveryInputToBeInsideAWorktree() throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -107,7 +360,7 @@ struct GitChangedImageScannerTests {
         try write("notes.txt", in: directory)
         let results = try GitChangedImageScanner.scan([directory], supportedExtensions: ["png", "jpg"])
         let names = Set(try #require(results.first).images.map {
-            String($0.url.path.dropFirst(directory.path.count + 1))
+            String($0.url.resolvingSymlinksInPath().path.dropFirst(directory.resolvingSymlinksInPath().path.count + 1))
         })
         #expect(names == ["staged.png", "unstaged.jpg", "renamed 图片\n.png", untrackedName, "nested/new.png"])
         #expect(results[0].images.allSatisfy { $0.byteCount > 0 })

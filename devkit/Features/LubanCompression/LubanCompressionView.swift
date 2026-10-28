@@ -170,6 +170,9 @@ final class LubanCompressionModel: ImageCompressionSelectionModel {
     func select(urls: [URL], refreshing: Bool = false, startAfterScan: Bool = false) -> Task<Void, Never>? {
         guard !isRunning, !isRestoring, !isRefreshingSelection else { return nil }
         let previousItems = selectionHistory(merging: imageItems, into: retainedSelectionItems)
+        // Revalidate the ordinary queue without adding newly discovered files or prior outputs.
+        let queuedURLs = startAfterScan && !onlyGitChangedImages
+            ? Set(imageItems.map { $0.id.resolvingSymlinksInPath() }) : nil
         let standardizedURLs = urls.map(\.standardizedFileURL)
         let effectiveURLs = effectiveScanRoots(standardizedURLs, history: previousItems)
         // Existing inputs must all reach eligibility validation, including paths that disappeared.
@@ -233,10 +236,12 @@ final class LubanCompressionModel: ImageCompressionSelectionModel {
             var appended: [LubanImageItem] = []
             for (index, result) in results.enumerated() {
                 let inputURL = roots[index]
+                let inputPath = ImageCompressionInputPath(root: inputURL)
                 for image in result.images where knownPaths.insert(image.url.path).inserted {
+                    if let queuedURLs, !queuedURLs.contains(image.url.resolvingSymlinksInPath()) { continue }
                     appended.append(LubanImageItem(
                         id: image.url,
-                        relativePath: self.relativePath(for: image.url, inputURL: inputURL),
+                        relativePath: inputPath.relativePath(for: image.url),
                         byteCount: image.byteCount,
                         status: image.byteCount >= Int64(self.minimumCompressionSizeKB) * 1024 ? .waiting : .skipped,
                         compressedByteCount: nil,
@@ -269,10 +274,7 @@ final class LubanCompressionModel: ImageCompressionSelectionModel {
     @discardableResult
     func run() -> Task<Void, Never>? {
         guard canRun else { return nil }
-        if onlyGitChangedImages {
-            return select(urls: selectedURLs, refreshing: true, startAfterScan: true)
-        }
-        return startRun()
+        return select(urls: selectedURLs, refreshing: true, startAfterScan: true)
     }
 
     private func startRun() -> Task<Void, Never>? {
@@ -535,18 +537,6 @@ final class LubanCompressionModel: ImageCompressionSelectionModel {
         }
     }
 
-    private func relativePath(for imageURL: URL, inputURL: URL) -> String {
-        if LubanInputScanner.isDirectory(inputURL) {
-            let paths = [
-                (imageURL.standardizedFileURL.path, inputURL.standardizedFileURL.path),
-                (imageURL.resolvingSymlinksInPath().path, inputURL.resolvingSymlinksInPath().path)
-            ]
-            for (image, root) in paths where image.hasPrefix(root + "/") {
-                return String(image.dropFirst(root.count + 1))
-            }
-        }
-        return imageURL.lastPathComponent
-    }
 
     private static func fileTimestamp() -> String {
         let formatter = DateFormatter()

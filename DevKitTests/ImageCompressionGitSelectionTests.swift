@@ -39,6 +39,8 @@ struct ImageCompressionGitSelectionTests {
         case replacementLock, toggleExistingSelection, nonRepository, noMatchingImages, clearSelection
         case hiddenThresholdDrops, hiddenThresholdRises
         case cancelFilterChange
+        case ignoredImagesNeverEnterQueue
+        case excludedDirectoriesNeverEnterQueue
     }
     enum RootCombination: CaseIterable {
         case bothGit, bothGitFilterOff, gitThenNonGit, nonGitThenGit, bothNonGit, firstRepositoryDisappears
@@ -77,7 +79,7 @@ struct ImageCompressionGitSelectionTests {
 
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let clean = directory.appendingPathComponent("clean.png")
+        let clean = directory.appendingPathComponent(scenario == .excludedDirectoriesNeverEnterQueue ? "visible.png" : "clean.png")
         try Data("clean-image".utf8).write(to: clean)
         let changesHiddenThreshold = scenario == .hiddenThresholdDrops || scenario == .hiddenThresholdRises
         if changesHiddenThreshold {
@@ -96,6 +98,85 @@ struct ImageCompressionGitSelectionTests {
         }
 
         try initializeRepository(directory)
+        if scenario == .excludedDirectoriesNeverEnterQueue {
+            let excludedDirectories = ["build", "tmp", "DerivedData", "nested/BUILD", "nested/TmP", "nested/dErIvEdDaTa", "Packages", "nested/pAcKaGeS"]
+                .map { directory.appendingPathComponent($0, isDirectory: true) }
+            let excludedFiles = excludedDirectories.map { $0.appendingPathComponent("excluded.png") }
+            let excludedBytes = Data("excluded-directory-image".utf8)
+            for (folder, file) in zip(excludedDirectories, excludedFiles) {
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                try excludedBytes.write(to: file)
+            }
+            try Data("changed-visible-image".utf8).write(to: clean)
+            model.choose([directory])
+            try await waitForScan(model)
+            #expect(model.imageItems.map(\.id.lastPathComponent) == ["visible.png"])
+            model.onlyGitChangedImages = true
+            try await waitForScan(model)
+            #expect(model.imageItems.map(\.id.lastPathComponent) == ["visible.png"])
+            model.onlyGitChangedImages = false
+            try await waitForScan(model)
+            #expect(model.imageItems.map(\.id.lastPathComponent) == ["visible.png"])
+
+            // Both direct folder roots and individually selected child images obey the same exclusion.
+            for directInputs in [excludedDirectories, excludedFiles] {
+                model.clearSelection()
+                model.choose(directInputs)
+                try await waitForScan(model)
+                #expect(model.imageItems.isEmpty)
+                #expect(!model.canRun)
+            }
+            for file in excludedFiles { #expect(try Data(contentsOf: file) == excludedBytes) }
+            return
+        }
+        if scenario == .ignoredImagesNeverEnterQueue {
+            let ignored = directory.appendingPathComponent("ignored.png")
+            let trackedIgnored = directory.appendingPathComponent("tracked-ignored.png")
+            let ignoredBytes = Data("ignored-image".utf8)
+            try ignoredBytes.write(to: trackedIgnored)
+            try git(["add", "tracked-ignored.png"], in: directory)
+            try git(["commit", "--quiet", "-m", "Track image before adding ignore rules"], in: directory)
+            try ignoredBytes.write(to: ignored)
+            model.choose([directory])
+            try await waitForScan(model)
+            for name in ["ignored.png", "tracked-ignored.png"] {
+                let id = try #require(model.imageItems.first { $0.id.lastPathComponent == name }?.id)
+                await model.setCompressionEnabled(true, for: id)
+            }
+
+            // Adding B must recheck A's current ignore rules, including manually enabled tracked files.
+            try Data("ignored.png\ntracked-ignored.png\n".utf8).write(to: directory.appendingPathComponent(".gitignore"))
+            let second = directory.appendingPathComponent("b.png")
+            try Data("second-image".utf8).write(to: second)
+            model.choose([second])
+            try await waitForScan(model)
+            #expect(Set(model.imageItems.map(\.id.lastPathComponent)) == ["clean.png", "b.png"])
+            model.onlyGitChangedImages = true
+            try await waitForScan(model)
+            #expect(model.imageItems.map(\.id.lastPathComponent) == ["b.png"])
+            model.onlyGitChangedImages = false
+            try await waitForScan(model)
+            #expect(Set(model.imageItems.map(\.id.lastPathComponent)) == ["clean.png", "b.png"])
+
+            for url in [ignored, trackedIgnored] {
+                model.clearSelection()
+                model.choose([url])
+                try await waitForScan(model)
+                #expect(model.imageItems.isEmpty)
+                #expect(!model.canRun)
+                #expect(model.isGitFilterAvailable)
+                await model.setCompressionEnabled(true, for: url)
+                #expect(model.imageItems.isEmpty)
+                model.onlyGitChangedImages = true
+                try await waitForScan(model)
+                #expect(model.imageItems.isEmpty)
+                model.onlyGitChangedImages = false
+                try await waitForScan(model)
+                #expect(model.imageItems.isEmpty)
+                #expect(try Data(contentsOf: url) == ignoredBytes)
+            }
+            return
+        }
         if scenario == .cancelFilterChange {
             let dirty = directory.appendingPathComponent("dirty.png")
             try Data("dirty-image".utf8).write(to: dirty)
@@ -233,7 +314,7 @@ struct ImageCompressionGitSelectionTests {
         try Data("ignored-image".utf8).write(to: directory.appendingPathComponent("ignored.png"))
         model.choose([directory])
         try await waitForScan(model)
-        #expect(model.imageItems.count == 7)
+        #expect(model.imageItems.count == 6)
         let skippedID = try #require(model.imageItems.first { $0.id.lastPathComponent == "staged.png" }?.id)
         await model.setCompressionEnabled(false, for: skippedID)
         let cleanID = try #require(model.imageItems.first { $0.id.lastPathComponent == "clean.png" }?.id)
@@ -269,7 +350,7 @@ struct ImageCompressionGitSelectionTests {
         model.onlyGitChangedImages = false
         try await waitForScan(model)
         #expect(Set(model.imageItems.map(\.id.lastPathComponent)) == [
-            "clean.png", "staged.png", "unstaged.png", "untracked.png", "ignored.png", "completed.png", "clean-result.png"
+            "clean.png", "staged.png", "unstaged.png", "untracked.png", "completed.png", "clean-result.png"
         ])
         #expect(model.imageItems.first { $0.id.lastPathComponent == "staged.png" }?.compressionOverride == false)
         let restoredClean = try #require(model.imageItems.first { $0.id.lastPathComponent == "clean.png" })
@@ -430,6 +511,39 @@ struct ImageCompressionGitSelectionTests {
         let surviving = try #require(model.imageItems.first { $0.id.lastPathComponent == "b.png" })
         #expect(surviving.status == .waiting)
         #expect(try Data(contentsOf: secondImage) == secondBytes)
+    }
+
+    @Test func lubanNormalRunRechecksNewIgnoreRulesBeforeCreatingOutput() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("source.png")
+        let original = Data("original-must-not-be-compressed-or-copied".utf8)
+        try original.write(to: source)
+        try initializeRepository(directory)
+        let suite = "GitIgnoreNormalPreflight-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = LubanCompressionModel(preferencesDefaults: defaults, outputBaseDirectory: directory)
+        model.minimumCompressionSizeKB = 0
+        model.select(urls: [directory])
+        try await waitForScan(model)
+        let sourceID = try #require(model.imageItems.first?.id)
+        await model.setCompressionEnabled(true, for: sourceID)
+        #expect(!model.onlyGitChangedImages)
+        #expect(model.canRun)
+
+        try Data("source.png\n".utf8).write(to: directory.appendingPathComponent(".gitignore"))
+        let newImage = directory.appendingPathComponent("new.png")
+        let newBytes = Data("appeared-after-selection-must-not-enter-this-run".utf8)
+        try newBytes.write(to: newImage)
+        let run = try #require(model.run())
+        await run.value
+        #expect(model.imageItems.isEmpty)
+        #expect(!model.isRunning)
+        #expect(model.outputDirectoryURL == nil)
+        #expect(try Data(contentsOf: source) == original)
+        #expect(try Data(contentsOf: newImage) == newBytes)
+        #expect(Set(try FileManager.default.contentsOfDirectory(atPath: directory.path)) == [".git", ".gitignore", "source.png", "new.png"])
     }
 
     @Test func lubanRechecksGitAfterSelectionBeforeReplacingAnyImage() async throws {

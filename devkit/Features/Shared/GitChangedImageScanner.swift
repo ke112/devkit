@@ -20,10 +20,15 @@ enum GitChangedImageScanner {
                 // Eligibility may fall back to normal selection, but a status failure must surface.
                 scans = try scan(roots, supportedExtensions: supportedExtensions)
             } else {
-                scans = try roots.map { root in
+                let ordinaryScans = try roots.map { root in
                     try Task.checkCancellation()
-                    return scanImage(root)
+                    guard !ImageCompressionInputRules.excludes(root),
+                          !hasUnsafeSourceSymlink(root) else { return ImageScanResult(images: []) }
+                    return ImageScanResult(images: scanImage(root).images.filter {
+                        !ImageCompressionInputRules.excludes($0.url)
+                    })
                 }
+                scans = try excludingIgnoredImages(from: ordinaryScans)
             }
             try Task.checkCancellation()
             return ImageCompressionScanResult(
@@ -38,6 +43,7 @@ enum GitChangedImageScanner {
             var checkedDirectories = Set<URL>()
             for root in roots {
                 try Task.checkCancellation()
+                guard !hasUnsafeSourceSymlink(root) else { return false }
                 guard let values = try? root.resourceValues(forKeys: [
                     .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey
                 ]), values.isSymbolicLink != true,
@@ -64,10 +70,10 @@ enum GitChangedImageScanner {
     ) throws -> [ImageScanResult] {
         try withAccess(to: roots) {
             let changed = try changedFiles(in: roots)
-            return roots.map { root in
+            let scans = roots.map { root in
                 // Another root may contribute this link's target to the shared changed set.
-                let rootValues = try? root.resourceValues(forKeys: [.isSymbolicLinkKey])
-                guard rootValues?.isSymbolicLink != true else { return ImageScanResult(images: []) }
+                guard !ImageCompressionInputRules.excludes(root),
+                      !hasUnsafeSourceSymlink(root) else { return ImageScanResult(images: []) }
                 let canonicalRoot = root.resolvingSymlinksInPath().standardizedFileURL
                 let isDirectory = ImageTaskScanner.isDirectory(root)
                 let images = changed.compactMap { file -> ImageScannedImage? in
@@ -79,11 +85,127 @@ enum GitChangedImageScanner {
                     let url = isDirectory
                         ? root.appendingPathComponent(String(file.path.dropFirst(canonicalRoot.path.count + 1)))
                         : root
+                    guard !ImageCompressionInputRules.excludes(url) else { return nil }
                     return ImageScannedImage(url: url, byteCount: Int64(size))
                 }.sorted { $0.url.path.localizedStandardCompare($1.url.path) == .orderedAscending }
                 return ImageScanResult(images: images)
             }
+            return try excludingIgnoredImages(from: scans)
         }
+    }
+
+    /// Git owns pattern precedence, negation, nested rules, info/exclude and global excludes.
+    nonisolated private static func excludingIgnoredImages(from scans: [ImageScanResult]) throws -> [ImageScanResult] {
+        let safeScans = scans.map { scan in
+            ImageScanResult(images: scan.images.filter { !hasUnsafeSourceSymlink($0.url) })
+        }
+        var repositoryCache: [URL: RepositoryLocation] = [:]
+        var filesByRepository: [URL: Set<URL>] = [:]
+        let files = Set(safeScans.flatMap(\.images).map { $0.url.resolvingSymlinksInPath().standardizedFileURL })
+        for file in files {
+            try Task.checkCancellation()
+            if let repository = try repository(containing: file.deletingLastPathComponent(), cache: &repositoryCache) {
+                guard file.path.hasPrefix(repository.path + "/") else {
+                    throw ScanError(message: "图片路径不在 Git 返回的工作树中：\(file.path)")
+                }
+                filesByRepository[repository, default: []].insert(file)
+            }
+        }
+
+        var ignoredFiles = Set<URL>()
+        for (repository, files) in filesByRepository {
+            try Task.checkCancellation()
+            let paths = Set(files.map { String($0.path.dropFirst(repository.path.count + 1)) })
+            var input = Data()
+            for path in paths.sorted() {
+                input.append(contentsOf: path.utf8)
+                input.append(0)
+            }
+            let ignored = try git(
+                ["check-ignore", "--no-index", "-z", "--stdin"], in: repository,
+                standardInput: input, acceptedStatuses: [0, 1], rejectStandardError: true
+            )
+            for record in ignored.split(separator: 0) {
+                guard let path = String(data: Data(record), encoding: .utf8), paths.contains(path) else {
+                    throw ScanError(message: "Git 返回了无法识别的忽略文件路径。")
+                }
+                ignoredFiles.insert(repository.appendingPathComponent(path).standardizedFileURL)
+            }
+        }
+        try Task.checkCancellation()
+        return safeScans.map { scan in
+            ImageScanResult(images: scan.images.filter {
+                !ignoredFiles.contains($0.url.resolvingSymlinksInPath().standardizedFileURL)
+            })
+        }
+    }
+
+    /// A symlink inside a worktree must not hide the source's own ignore rules.
+    /// Aliases above the worktree, such as /tmp -> /private/tmp, remain supported.
+    nonisolated private static func hasUnsafeSourceSymlink(_ source: URL) -> Bool {
+        var current = source.standardizedFileURL
+        if (try? current.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true { return true }
+        if ImageTaskScanner.isDirectory(current),
+           (try? FileManager.default.attributesOfItem(atPath: current.appendingPathComponent(".git").path)) != nil {
+            return false
+        }
+        current = current.deletingLastPathComponent().standardizedFileURL
+        var crossedSymlink = false
+        while true {
+            if (try? current.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true {
+                crossedSymlink = true
+            }
+            let marker = current.appendingPathComponent(".git")
+            if (try? FileManager.default.attributesOfItem(atPath: marker.path)) != nil { return crossedSymlink }
+            if current.path == "/" { return false }
+            let parent = current.deletingLastPathComponent().standardizedFileURL
+            if parent.pathComponents.count >= current.pathComponents.count { return false }
+            current = parent
+        }
+    }
+
+    /// Cache each directory's closest worktree marker; check-ignore validates that anchor when checking rules.
+    nonisolated private static func repository(
+        containing directory: URL, cache: inout [URL: RepositoryLocation]
+    ) throws -> URL? {
+        var current = directory
+        var visited: [URL] = []
+        let location: RepositoryLocation
+        while true {
+            try Task.checkCancellation()
+            if let cached = cache[current] {
+                location = cached
+                break
+            }
+            visited.append(current)
+            let marker = current.appendingPathComponent(".git")
+            if (try? FileManager.default.attributesOfItem(atPath: marker.path)) != nil {
+                // check-ignore validates this marker and resolves its rules itself. Avoid a second Git process
+                // for every dependency checkout just to rediscover the directory containing its .git marker.
+                location = .worktree(current.resolvingSymlinksInPath().standardizedFileURL)
+                break
+            }
+            if current.path == "/" {
+                location = .outside
+                break
+            }
+            let parent = current.deletingLastPathComponent().standardizedFileURL
+            if parent.pathComponents.count >= current.pathComponents.count {
+                location = .outside
+                break
+            }
+            current = parent
+        }
+        for directory in visited { cache[directory] = location }
+        switch location {
+        case .worktree(let root): return root
+        case .outside: return nil
+        }
+    }
+
+    private enum RepositoryLocation: Sendable {
+        case worktree(URL)
+        case outside
     }
 
     nonisolated private static func changedFiles(in roots: [URL]) throws -> Set<URL> {
@@ -92,8 +214,8 @@ enum GitChangedImageScanner {
         for root in roots {
             try Task.checkCancellation()
             // A directly selected symbolic link is not a writable image source.
-            let rootValues = try? root.resourceValues(forKeys: [.isSymbolicLinkKey])
-            guard rootValues?.isSymbolicLink != true else { continue }
+            guard !ImageCompressionInputRules.excludes(root),
+                  !hasUnsafeSourceSymlink(root) else { continue }
             let canonicalRoot = root.resolvingSymlinksInPath().standardizedFileURL
             let isDirectory = ImageTaskScanner.isDirectory(root)
             let directory = isDirectory ? canonicalRoot : canonicalRoot.deletingLastPathComponent()
@@ -176,7 +298,10 @@ enum GitChangedImageScanner {
         return try work()
     }
 
-    nonisolated private static func git(_ arguments: [String], in directory: URL) throws -> Data {
+    nonisolated private static func git(
+        _ arguments: [String], in directory: URL, standardInput: Data? = nil,
+        acceptedStatuses: Set<Int32> = [0], rejectStandardError: Bool = false
+    ) throws -> Data {
         try Task.checkCancellation()
         let temporaryDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("DevKit-Git-\(UUID().uuidString)", isDirectory: true)
@@ -188,22 +313,33 @@ enum GitChangedImageScanner {
         FileManager.default.createFile(atPath: errorURL.path, contents: nil)
         let output = try FileHandle(forWritingTo: outputURL)
         let error = try FileHandle(forWritingTo: errorURL)
+        var input: FileHandle?
+        if let standardInput {
+            let inputURL = temporaryDirectory.appendingPathComponent("stdin")
+            try standardInput.write(to: inputURL)
+            input = try FileHandle(forReadingFrom: inputURL)
+        }
         defer {
             try? output.close()
             try? error.close()
+            try? input?.close()
         }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = ["--no-optional-locks", "-C", directory.path] + arguments
-        process.standardInput = FileHandle.nullDevice
+        process.standardInput = input ?? FileHandle.nullDevice
         process.standardOutput = output
         process.standardError = error
+        let completion = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in completion.signal() }
         try process.run()
-        process.waitUntilExit()
+        completion.wait()
         try Task.checkCancellation()
-        guard process.terminationStatus == 0 else {
-            let message = String(decoding: try Data(contentsOf: errorURL), as: UTF8.self)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+        let message = String(decoding: try Data(contentsOf: errorURL), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard process.terminationReason == .exit,
+              acceptedStatuses.contains(process.terminationStatus),
+              !rejectStandardError || message.isEmpty else {
             throw ScanError(message: message.isEmpty ? "Git 命令执行失败。" : message)
         }
         return try Data(contentsOf: outputURL)

@@ -347,6 +347,9 @@ final class TinyPNGModel: ImageCompressionSelectionModel {
     func select(urls: [URL], refreshing: Bool = false, startAfterScan: Bool = false) -> Bool {
         guard !isRunning, !isRestoring, !isRefreshingSelection else { return false }
         let previousItems = selectionHistory(merging: imageItems, into: retainedSelectionItems)
+        // Revalidate the ordinary queue without adding newly discovered files or prior outputs.
+        let queuedURLs = startAfterScan && !onlyGitChangedImages
+            ? Set(imageItems.map { $0.id.resolvingSymlinksInPath() }) : nil
         let standardizedURLs = urls.map(\.standardizedFileURL)
         let effectiveURLs = effectiveScanRoots(standardizedURLs, history: previousItems)
         // Existing inputs must all reach eligibility validation, including paths that disappeared.
@@ -427,11 +430,13 @@ final class TinyPNGModel: ImageCompressionSelectionModel {
             var appendedItems: [TinyPNGImageItem] = []
             for (index, result) in results.enumerated() {
                 let inputURL = scannedURLs[index]
+                let inputPath = ImageCompressionInputPath(root: inputURL)
                 for image in result.images where knownPaths.insert(image.url.path).inserted {
+                    if let queuedURLs, !queuedURLs.contains(image.url.resolvingSymlinksInPath()) { continue }
                     appendedItems.append(
                         TinyPNGImageItem(
                             id: image.url,
-                            relativePath: self.relativePath(for: image.url, inputURL: inputURL),
+                            relativePath: inputPath.relativePath(for: image.url),
                             byteCount: image.byteCount,
                             status: self.shouldSkip(image.byteCount, minimumCompressionBytes: self.minimumCompressionSizeBytes)
                                 ? .skipped
@@ -468,11 +473,7 @@ final class TinyPNGModel: ImageCompressionSelectionModel {
 
     func run() {
         guard canRun else { return }
-        if onlyGitChangedImages {
-            select(urls: selectedURLs, refreshing: true, startAfterScan: true)
-        } else {
-            startRun()
-        }
+        select(urls: selectedURLs, refreshing: true, startAfterScan: true)
     }
 
     private func startRun() {
@@ -691,36 +692,6 @@ final class TinyPNGModel: ImageCompressionSelectionModel {
         return nil
     }
 
-    private func relativePath(for imageURL: URL, inputURL: URL) -> String {
-        if TinyPNGInputScanner.isDirectory(inputURL) {
-            let privateRelative = imageURL.path.replacingOccurrences(
-                of: "/private" + inputURL.path + "/",
-                with: ""
-            )
-            if privateRelative != imageURL.path {
-                return privateRelative
-            }
-            let standardizedRelative = imageURL.path.replacingOccurrences(
-                of: inputURL.standardizedFileURL.path + "/",
-                with: ""
-            )
-            if standardizedRelative != imageURL.path {
-                return standardizedRelative
-            }
-            let relative = imageURL.path.replacingOccurrences(
-                of: inputURL.path + "/",
-                with: ""
-            )
-            if relative != imageURL.path {
-                return relative
-            }
-            return imageURL.path.replacingOccurrences(
-                of: inputURL.standardizedFileURL.path + "/",
-                with: ""
-            )
-        }
-        return imageURL.lastPathComponent
-    }
 
     private func applyProcessEvents(from output: String) {
         for line in output.split(whereSeparator: \.isNewline) {

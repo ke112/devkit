@@ -33,6 +33,33 @@ final class ImageCompressionGitOptions {
     }
 }
 
+/// Resolve each input root once before publishing a batch of image rows on the main actor.
+struct ImageCompressionInputPath {
+    private let prefix: String?
+    private let canonicalPrefix: String?
+
+    init(root: URL) {
+        if ImageTaskScanner.isDirectory(root) {
+            let path = root.standardizedFileURL.path
+            let canonical = root.resolvingSymlinksInPath().path
+            prefix = path.hasSuffix("/") ? path : path + "/"
+            canonicalPrefix = canonical.hasSuffix("/") ? canonical : canonical + "/"
+        } else {
+            prefix = nil
+            canonicalPrefix = nil
+        }
+    }
+
+    func relativePath(for image: URL) -> String {
+        guard let prefix, let canonicalPrefix else { return image.lastPathComponent }
+        let path = image.standardizedFileURL.path
+        if path.hasPrefix(prefix) { return String(path.dropFirst(prefix.count)) }
+        let canonical = image.resolvingSymlinksInPath().path
+        if canonical.hasPrefix(canonicalPrefix) { return String(canonical.dropFirst(canonicalPrefix.count)) }
+        return image.lastPathComponent
+    }
+}
+
 protocol SelectableImageCompressionTaskItem: ImageCompressionTaskItem {
     var status: ImageCompressionTaskStatus { get set }
     var resultByteCount: Int64? { get set }
@@ -97,11 +124,13 @@ extension ImageCompressionSelectionModel {
 
     private func hasMovedReplacement(_ item: ImageItem) -> Bool {
         item.status == .success && item.resultReplacedOriginal
+            && !ImageCompressionInputRules.excludes(item.id)
             && !FileManager.default.fileExists(atPath: item.id.path)
             && item.destinationPath.map { FileManager.default.fileExists(atPath: $0) } == true
     }
 
     func retainingSelectionState(in scanned: [ImageItem], from previous: [ImageItem]) -> [ImageItem] {
+        guard !previous.isEmpty else { return scanned }
         let previousByURL = Dictionary(previous.map { ($0.id.resolvingSymlinksInPath(), $0) },
                                        uniquingKeysWith: { first, _ in first })
         let movedResults = previous.filter(hasMovedReplacement)
