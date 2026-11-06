@@ -97,19 +97,12 @@ class SimulatorManager: ObservableObject, ErrorHandler {
         guard !isActive else { return }
         isActive = true
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            self?.cleanUnavailableDevices()
+        refreshDevices()
 
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.isActive else { return }
-                self.refreshDevices()
-
-                self.timer = Timer.scheduledTimer(withTimeInterval: self.refreshInterval, repeats: true) {
-                    [weak self] _ in
-                    guard let self, self.isActive, !self.isOperating else { return }
-                    self.refreshDevicesWithDebounce()
-                }
-            }
+        timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) {
+            [weak self] _ in
+            guard let self, self.isActive, !self.isOperating else { return }
+            self.refreshDevicesWithDebounce()
         }
     }
 
@@ -124,50 +117,6 @@ class SimulatorManager: ObservableObject, ErrorHandler {
     deinit {
         timer?.invalidate()
         refreshTask?.cancel()
-    }
-
-    /// 清理不可用的模拟器（带超时保护）
-    private func cleanUnavailableDevices() {
-        let process = Process()
-        let pipe = Pipe()
-        let timeoutSeconds: Double = 5.0
-
-        process.executableURL = URL(fileURLWithPath: configuredSimctlExecutablePath())
-        process.arguments = configuredSimctlArguments(["delete", "unavailable"])
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        var didTimeout = false
-
-        // 设置超时
-        let timeoutWorkItem = DispatchWorkItem { [weak process] in
-            guard let process = process, process.isRunning else { return }
-            didTimeout = true
-            process.terminate()
-        }
-        DispatchQueue.global().asyncAfter(deadline: .now() + timeoutSeconds, execute: timeoutWorkItem)
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-            timeoutWorkItem.cancel()
-
-            if didTimeout {
-                print("清理超时：清理命令执行超过\(Int(timeoutSeconds))秒")
-                return
-            }
-
-            if process.terminationStatus == 0 {
-                print("清理完成：已删除不可用的模拟器")
-            } else {
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                if let error = String(data: data, encoding: .utf8), !error.isEmpty {
-                    print("清理失败：\(error)")
-                }
-            }
-        } catch {
-            print("清理执行失败：\(error.localizedDescription)")
-        }
     }
 
     /// 带防抖的刷新设备列表（定时器驱动）
@@ -252,10 +201,8 @@ class SimulatorManager: ObservableObject, ErrorHandler {
         process.standardError = pipe
 
         do {
-            try process.run()
-            process.waitUntilExit()
+            let data = try SimulatorProcessCapture.run(process, outputPipe: pipe)
 
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             let output = String(data: data, encoding: .utf8) ?? ""
             return DeveloperToolCheckResult(terminationStatus: process.terminationStatus, output: output)
         } catch {
@@ -453,8 +400,7 @@ class SimulatorManager: ObservableObject, ErrorHandler {
         DispatchQueue.global().asyncAfter(deadline: .now() + timeoutSeconds, execute: timeoutWorkItem)
 
         do {
-            try process.run()
-            process.waitUntilExit()
+            let data = try SimulatorProcessCapture.run(process, outputPipe: pipe)
             terminationOccurred = true
             timeoutWorkItem.cancel()
 
@@ -462,8 +408,6 @@ class SimulatorManager: ObservableObject, ErrorHandler {
                 PerformanceMonitor.shared.logDebug("JSON 格式刷新超时（\(Int(timeoutSeconds))秒）")
                 return (false, nil)
             }
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
 
             if process.terminationStatus != 0 {
                 let output = String(data: data, encoding: .utf8) ?? ""
@@ -512,8 +456,7 @@ class SimulatorManager: ObservableObject, ErrorHandler {
         DispatchQueue.global().asyncAfter(deadline: .now() + timeoutSeconds, execute: timeoutWorkItem)
 
         do {
-            try process.run()
-            process.waitUntilExit()
+            let data = try SimulatorProcessCapture.run(process, outputPipe: pipe)
             terminationOccurred = true
             timeoutWorkItem.cancel()
 
@@ -521,8 +464,6 @@ class SimulatorManager: ObservableObject, ErrorHandler {
                 PerformanceMonitor.shared.logDebug("文本格式刷新超时（\(Int(timeoutSeconds))秒）")
                 return (false, nil)
             }
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
 
             if process.terminationStatus != 0 {
                 let output = String(data: data, encoding: .utf8) ?? ""
@@ -1027,16 +968,13 @@ class SimulatorManager: ObservableObject, ErrorHandler {
         DispatchQueue.global().asyncAfter(deadline: .now() + timeoutSeconds, execute: timeoutWorkItem)
 
         do {
-            try process.run()
-            process.waitUntilExit()
+            let data = try SimulatorProcessCapture.run(process, outputPipe: pipe)
             timeoutWorkItem.cancel()
 
             if didTimeout {
                 print("获取 Runtime 超时：命令执行超过\(Int(timeoutSeconds))秒")
                 return []
             }
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
 
             // 解析 JSON
             if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1586,8 +1524,7 @@ class SimulatorManager: ObservableObject, ErrorHandler {
         DispatchQueue.global().asyncAfter(deadline: .now() + timeoutSeconds, execute: timeoutWorkItem)
 
         do {
-            try process.run()
-            process.waitUntilExit()
+            let data = try SimulatorProcessCapture.run(process, outputPipe: pipe)
             terminationOccurred = true
             timeoutWorkItem.cancel()
 
@@ -1595,8 +1532,6 @@ class SimulatorManager: ObservableObject, ErrorHandler {
                 PerformanceMonitor.shared.logInfo("getDevices: JSON 格式超时（\(Int(timeoutSeconds))秒）")
                 return nil
             }
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
 
             if data.isEmpty {
                 PerformanceMonitor.shared.logInfo("getDevices: JSON 格式返回空数据")
@@ -1641,8 +1576,7 @@ class SimulatorManager: ObservableObject, ErrorHandler {
         DispatchQueue.global().asyncAfter(deadline: .now() + timeoutSeconds, execute: timeoutWorkItem)
 
         do {
-            try process.run()
-            process.waitUntilExit()
+            let data = try SimulatorProcessCapture.run(process, outputPipe: pipe)
             terminationOccurred = true
             timeoutWorkItem.cancel()
 
@@ -1650,8 +1584,6 @@ class SimulatorManager: ObservableObject, ErrorHandler {
                 PerformanceMonitor.shared.logInfo("getDevices: 文本格式超时（\(Int(timeoutSeconds))秒）")
                 return nil
             }
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
 
             guard !data.isEmpty, let output = String(data: data, encoding: .utf8) else {
                 PerformanceMonitor.shared.logInfo("getDevices: 文本格式返回空数据")

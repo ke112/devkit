@@ -355,9 +355,12 @@ class DeviceSpecsManager {
     process.standardOutput = pipe
     process.standardError = pipe
     do {
-      try process.run()
-      process.waitUntilExit()
-      return pipe.fileHandleForReading.readDataToEndOfFile()
+      let data = try SimulatorProcessCapture.run(process, outputPipe: pipe)
+      guard process.terminationStatus == 0 else {
+        print("[DeviceSpecs] Process exited with status \(process.terminationStatus)")
+        return nil
+      }
+      return data
     } catch {
       print("[DeviceSpecs] Process failed: \(error)")
       return nil
