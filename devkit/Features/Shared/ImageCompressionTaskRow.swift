@@ -17,6 +17,7 @@ struct ImageCompressionTaskRow: View {
     let elapsedText: String?
     let destinationPath: String?
     let state: ImageCompressionTaskRowStyle
+    var onContinueCompression: (() -> Void)? = nil
     var showsPreviewButton: Bool = false
     var onPreview: (() -> Void)? = nil
     let onRevealSource: () -> Void
@@ -73,6 +74,16 @@ struct ImageCompressionTaskRow: View {
             }
 
             Spacer(minLength: 12)
+
+            if let onContinueCompression {
+                Button(action: onContinueCompression) {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .disabled(compressionControlsDisabled)
+                .accessibilityLabel("\(title) 继续压缩")
+                .help("用上一次的结果图继续压缩")
+            }
 
             if showsPreviewButton, let onPreview {
                 Button(action: onPreview) {

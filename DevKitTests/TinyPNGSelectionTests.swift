@@ -43,13 +43,16 @@ struct TinyPNGSelectionTests {
         #expect(model.imageItems.map(\.status) == [.waiting, .skipped, .waiting, .skipped])
     }
 
-    @Test func completedResultsStayEnabledAfterThresholdChangesAndCannotRunAgain() throws {
+    @Test func completedResultsCanContinueAfterThresholdChangesWhenDestinationExists() throws {
         let model = TinyPNGModel(preferencesDefaults: try isolatedDefaults())
         model.selectedURLs = [URL(fileURLWithPath: "/tmp")]
         model.imageItems = [item("done", status: .success)]
         model.minimumCompressionSizeKB = 200
         #expect(model.displayGroups[0].tasks.first?.compressionEnabled == true)
         #expect(!model.canRun)
+        model.imageItems[0].destinationPath = "/tmp/output/done.png"
+        #expect(model.canRun)
+        #expect(model.startButtonLabel == "继续压缩")
     }
 
     @Test func thresholdReclassifiesFailedAndCancelledImagesWithoutResults() throws {

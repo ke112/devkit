@@ -89,6 +89,8 @@ final class ImageCompressionSelectionState<Item: SelectableImageCompressionTaskI
     fileprivate var history: [Item] = []
     fileprivate var isRefreshing = false
     fileprivate var token = UUID()
+    var continuationTask: Task<Void, Never>?
+    var continuationCancellation: StreamingProcessCancellation?
 
     fileprivate func cancel() {
         worker?.cancel()
@@ -123,13 +125,15 @@ protocol ImageCompressionSelectionModel: AnyObject {
     var scanConfiguration: ImageCompressionScanConfiguration { get }
     var minimumCompressionSizeKB: Int { get }
     var canRun: Bool { get }
-    var isRunning: Bool { get }
+    var isRunning: Bool { get set }
+    var isStopping: Bool { get set }
     var isScanning: Bool { get }
     var isRestoring: Bool { get set }
     var operationStatus: String { get set }
     var operationStatusSystemImage: String { get set }
     var alertMessage: String? { get set }
     var operationVerb: String { get }
+    var recompressionMethod: ImageRecompressionMethod { get }
     func supportsProcessing(_ item: ImageItem) -> Bool
     func makeSelectionItem(_ image: ImageScannedImage, relativePath: String) -> ImageItem
     func prepareForSelectionScan()
@@ -149,7 +153,16 @@ extension ImageCompressionSelectionModel {
     var isScanning: Bool { selectionState.isScanning }
     var canRun: Bool {
         !selectedURLs.isEmpty && !isRunning && !isScanning && !isRestoring
-            && imageItems.contains { $0.status != .success && isCompressionEnabled(for: $0) }
+            && (hasPendingCompression || hasCompressionResults)
+    }
+    var hasPendingCompression: Bool {
+        imageItems.contains { $0.status != .success && isCompressionEnabled(for: $0) }
+    }
+    var hasCompressionResults: Bool {
+        imageItems.contains { $0.status == .success && $0.destinationPath != nil }
+    }
+    var startButtonLabel: String {
+        !hasPendingCompression && hasCompressionResults ? "继续压缩" : "开始\(operationVerb)"
     }
     var isGitFilterAvailable: Bool { selectionState.gitOptions.isAvailable }
     var onlyGitChangedImages: Bool {
@@ -401,6 +414,7 @@ extension ImageCompressionSelectionModel {
         display.compressionEnabled = isCompressionEnabled(for: item)
         display.compressionToggleAllowed = supportsProcessing(item)
         display.canReset = item.status == .success && item.destinationPath != nil
+        display.canContinueCompression = display.canReset
         display.operationVerb = operationVerb
         return display
     }

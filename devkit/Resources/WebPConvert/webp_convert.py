@@ -10,6 +10,7 @@ WebP 批量转换工具
   --min-size-kb N  小于此大小（KB）的图片跳过转换，默认 100
   --max-side N     最长边超过 N 像素时按比例缩小，0 表示不限制，默认 0
   --replace        转换成功后替换原图；默认写入同级时间戳文件夹
+  --recompress-webp 允许对已有 WebP 结果继续编码，默认跳过已有 WebP
 """
 
 from __future__ import annotations
@@ -299,6 +300,7 @@ def main():
     parser.add_argument("--min-size-kb", type=int, default=100, help="小于此大小（KB）的图片跳过转换")
     parser.add_argument("--max-side", type=int, default=0, help="最长边超过该像素时按比例缩小，0 不限制")
     parser.add_argument("--replace", action="store_true", help="转换成功后替换原图；默认写入同级时间戳文件夹")
+    parser.add_argument("--recompress-webp", action="store_true", help="对已有 WebP 结果继续编码")
     parser.add_argument("--output-dir", default="", help="非替换模式的输出根目录；缺省仍为输入同级")
     args = parser.parse_args()
 
@@ -407,13 +409,13 @@ def main():
             shutil.copy2(image, copy)
             return publish_without_replacing(copy, unchanged_dst)
 
-    # 已是 WebP 的文件不重复编码
+    # 已有 WebP 默认跳过；继续压缩结果图时显式开启重复编码。
     tasks: list[tuple[Path, Path]] = []
     already_webp: list[tuple[Path, Path]] = []
     too_small: list[tuple[Path, Path]] = []
     for root, images in root_images:
         for image in images:
-            if image.suffix.lower() == ".webp":
+            if image.suffix.lower() == ".webp" and not args.recompress_webp:
                 already_webp.append((root, image))
             elif (not selection[image.resolve()] if selection is not None else image.stat().st_size < minimum_bytes):
                 too_small.append((root, image))

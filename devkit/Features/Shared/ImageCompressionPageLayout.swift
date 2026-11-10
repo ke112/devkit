@@ -19,6 +19,7 @@ struct ImageTaskDisplayModel: Identifiable, Equatable {
     var compressionEnabled: Bool? = nil
     var compressionToggleAllowed = true
     var canReset = false
+    var canContinueCompression = false
     var operationVerb = "压缩"
 
     var stateStyle: ImageCompressionTaskRowStyle {
@@ -297,6 +298,7 @@ struct ImageCompressionPageLayout<Extras: View>: View {
     var taskGroups: [ImageTaskDisplayGroup]? = nil
     var onSetCompressionEnabled: ((URL, Bool) -> Void)? = nil
     var onResetResult: ((URL) -> Void)? = nil
+    var onContinueCompression: ((URL) -> Void)? = nil
 
     var onDrop: ([URL]) -> Bool
     var onClear: () -> Void
@@ -442,6 +444,7 @@ struct ImageCompressionPageLayout<Extras: View>: View {
             elapsedText: task.elapsedText,
             destinationPath: task.destinationPath,
             state: task.stateStyle,
+            onContinueCompression: task.canContinueCompression ? { onContinueCompression?(task.id) } : nil,
             showsPreviewButton: task.canPreview,
             onPreview: {
                 guard let destinationPath = task.destinationPath else { return }

@@ -18,6 +18,7 @@ struct TinyPNGView: View {
             replaceHelp: "开启后压缩成功的图片会替换原文件；关闭后生成输出时间戳文件夹",
             dropSubtitle: "PNG、JPG、JPEG、WebP，单张最大 \(TinyPNGInputScanner.maxUploadBytes / 1024 / 1024)MB",
             stopLabel: "停止压缩",
+            startLabel: model.startButtonLabel,
             minimumCompressionSizeKB: $model.minimumCompressionSizeKB,
             onlyGitChangedImages: $model.onlyGitChangedImages,
             replaceOriginals: $model.replaceOriginals,
@@ -45,6 +46,7 @@ struct TinyPNGView: View {
             onResetResult: { id in
                 Task { await model.resetResult(for: id) }
             },
+            onContinueCompression: { model.continueCompression(for: $0) },
             onDrop: { urls in
                 guard !urls.isEmpty else { return false }
                 return model.select(urls: urls)
@@ -267,6 +269,8 @@ final class TinyPNGModel: ImageCompressionSelectionModel {
         item.byteCount <= TinyPNGInputScanner.maxUploadBytes
     }
 
+    var recompressionMethod: ImageRecompressionMethod { .tinyPNG }
+
     var isError: Bool {
         operationStatusSystemImage == "xmark.circle"
     }
@@ -348,11 +352,15 @@ final class TinyPNGModel: ImageCompressionSelectionModel {
 
     func run() {
         guard canRun else { return }
+        if !hasPendingCompression {
+            continueCompression()
+            return
+        }
         select(urls: selectedURLs, refreshing: true, startAfterScan: true)
     }
 
     private func startRun() {
-        guard canRun, !selectedURLs.isEmpty else { return }
+        guard canRun, hasPendingCompression, !selectedURLs.isEmpty else { return }
         guard let scriptURL = Bundle.main.url(forResource: "tinypng", withExtension: "py") else {
             showError("App 内缺少 TinyPNG 脚本：tinypng.py")
             return
@@ -506,6 +514,7 @@ final class TinyPNGModel: ImageCompressionSelectionModel {
 
     func stop() {
         if stopSelectionScan() { return }
+        if stopContinuedCompression() { return }
 
         guard isRunning, !isStopping else { return }
         isStopping = true

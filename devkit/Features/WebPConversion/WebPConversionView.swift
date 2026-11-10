@@ -20,7 +20,7 @@ struct WebPConversionView: View {
             replaceHelp: "开启后转换成功的图片会替换原文件；关闭后生成输出时间戳文件夹",
             dropSubtitle: "PNG、JPG、JPEG，转换为 WebP 格式",
             stopLabel: "停止转换",
-            startLabel: "开始转换",
+            startLabel: model.startButtonLabel,
             minimumCompressionSizeKB: $model.minimumCompressionSizeKB,
             onlyGitChangedImages: $model.onlyGitChangedImages,
             replaceOriginals: $model.replaceOriginals,
@@ -48,6 +48,7 @@ struct WebPConversionView: View {
             onResetResult: { id in
                 Task { await model.resetResult(for: id) }
             },
+            onContinueCompression: { model.continueCompression(for: $0) },
             onDrop: { urls in
                 guard !urls.isEmpty else { return false }
                 return model.select(urls: urls)
@@ -279,6 +280,7 @@ final class WebPConversionModel: ImageCompressionSelectionModel {
     }
 
     var operationVerb: String { "转换" }
+    var recompressionMethod: ImageRecompressionMethod { .webP(quality: quality, maximumSideLength: maximumSideLength) }
 
     func supportsProcessing(_ item: WebPImageItem) -> Bool { !item.isWebPSource }
 
@@ -371,11 +373,15 @@ final class WebPConversionModel: ImageCompressionSelectionModel {
 
     func run() {
         guard canRun else { return }
+        if !hasPendingCompression {
+            continueCompression()
+            return
+        }
         select(urls: selectedURLs, refreshing: true, startAfterScan: true)
     }
 
     private func startRun() {
-        guard canRun else { return }
+        guard canRun, hasPendingCompression else { return }
         guard let scriptURL = Bundle.main.url(forResource: "webp_convert", withExtension: "py") else {
             showError("App 内缺少 WebP 转换脚本：webp_convert.py")
             return
@@ -537,6 +543,7 @@ final class WebPConversionModel: ImageCompressionSelectionModel {
 
     func stop() {
         if stopSelectionScan() { return }
+        if stopContinuedCompression() { return }
 
         guard isRunning, !isStopping else { return }
         isStopping = true

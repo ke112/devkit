@@ -40,7 +40,10 @@ The TinyPNG single-file upper bound of 5 MB. Images above this bound are skipped
 An image excluded before upload by the size rules or its per-image switch. Both the pending/completed group and the skipped group sort by original file size, largest first; ties use natural relative-path order, then source path for stability. Switching an image back on returns it to its size-based position in the pending group. The 5 MB upload limit cannot be overridden. In output-folder mode its original bytes are preserved; in replacement mode the source remains unchanged.
 
 **Reset compression result**:
-Discard one completed result by restoring original bytes at its destination, then switch off compression and move it to the skipped group. Replacement mode restores the preserved source snapshot; output-folder mode replaces the result with an unchanged original. If restoration fails, keep the result state and report the error. Completed images keep their comparison action and are excluded from later compression runs until reset and manually enabled again.
+Discard one completed result by restoring original bytes at its destination, then switch off compression and move it to the skipped group. Replacement mode restores the preserved source snapshot; output-folder mode replaces the result with an unchanged original. If restoration fails, keep the result state and report the error. Completed images keep their comparison action. Ordinary runs process pending images; once none remain, the main button becomes Continue Compression. Each completed row also offers Continue Compression for that image.
+
+**Continue compression**:
+All three tools use one shared continuation transaction with their own existing encoder. Every attempt reads the latest result destination, bypasses the minimum-size threshold, and replaces that result only when the new bytes are smaller. WebP explicitly permits re-encoding a generated WebP; ordinary selection still skips existing WebP inputs. Original source identity, byte count, replacement mode and comparison snapshot remain unchanged, so comparison and Reset still refer to the first original. Git eligibility and ignore rules are rechecked. Failure, cancellation and a result that is not smaller preserve the previous successful result.
 
 ## Shared Luban and WebP selection
 

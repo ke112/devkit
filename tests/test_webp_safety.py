@@ -22,6 +22,33 @@ spec.loader.exec_module(webp)
 
 
 class WebPSafetyTests(unittest.TestCase):
+    def test_explicit_continuation_encodes_existing_webp_and_keeps_input(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source = root / "result.webp"
+            original = b"previous-webp" * 100
+            source.write_bytes(original)
+
+            def encode(src, target, quality, max_side):
+                self.assertEqual(src, source)
+                self.assertEqual(src.read_bytes(), original)
+                self.assertEqual((quality, max_side), (75, 640))
+                target.write_bytes(b"smaller-webp")
+                return ""
+
+            with patch.object(sys, "argv", [str(SCRIPT), str(source), "--recompress-webp",
+                                             "--min-size-kb", "0", "--quality", "75", "--max-side", "640"]), \
+                 patch.object(webp, "cwebp_available", return_value=True), \
+                 patch.object(webp, "encode_webp", side_effect=encode) as encoder, \
+                 contextlib.redirect_stdout(io.StringIO()) as output, self.assertRaises(SystemExit) as result:
+                webp.main()
+            self.assertEqual(result.exception.code, 0)
+            self.assertEqual(encoder.call_count, 1)
+            self.assertEqual(source.read_bytes(), original)
+            events = [json.loads(line[6:]) for line in output.getvalue().splitlines() if line.startswith("EVENT ")]
+            self.assertTrue(events[0]["ok"])
+            self.assertEqual(Path(events[0]["dst"]).read_bytes(), b"smaller-webp")
+
     def test_manifest_honors_manual_switches_and_excludes_completed_or_new_images(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

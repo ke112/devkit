@@ -203,7 +203,8 @@ struct LocalImageSelectionTests {
         let skipped = try #require(model.imageItems.first { $0.id == excluded })
         #expect(skipped.status == .skipped)
         #expect(try Data(contentsOf: URL(fileURLWithPath: #require(skipped.destinationPath))) == Data(contentsOf: excluded))
-        #expect(!model.canRun)
+        #expect(model.canRun)
+        #expect(model.startButtonLabel == "继续压缩")
         // A manually enabled image below the threshold still participates.
         await model.setCompressionEnabled(true, for: excluded)
         model.minimumCompressionSizeKB = 1000

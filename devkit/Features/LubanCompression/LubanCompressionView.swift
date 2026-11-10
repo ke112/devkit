@@ -105,6 +105,7 @@ final class LubanCompressionModel: ImageCompressionSelectionModel {
     }
 
     var isError: Bool { operationStatusSystemImage == "xmark.circle" }
+    var recompressionMethod: ImageRecompressionMethod { .luban }
 
     var completedImageCount: Int {
         imageItems.reduce(into: 0) { count, item in
@@ -154,11 +155,12 @@ final class LubanCompressionModel: ImageCompressionSelectionModel {
     @discardableResult
     func run() -> Task<Void, Never>? {
         guard canRun else { return nil }
+        if !hasPendingCompression { return continueCompression() }
         return select(urls: selectedURLs, refreshing: true, startAfterScan: true)
     }
 
     private func startRun() -> Task<Void, Never>? {
-        guard canRun else { return nil }
+        guard canRun, hasPendingCompression else { return nil }
         // Include skipped originals for output copies, while retaining completed results across runs.
         let pendingItems = imageItems.filter { $0.status != .success }
         let compressibleIDs = Set(pendingItems.filter { isCompressionEnabled(for: $0) }.map(\.id))
@@ -316,6 +318,7 @@ final class LubanCompressionModel: ImageCompressionSelectionModel {
 
     func stop() {
         if stopSelectionScan() { return }
+        if stopContinuedCompression() { return }
         guard isRunning, !isStopping else { return }
         isStopping = true
         operationStatus = "正在停止"
@@ -408,6 +411,7 @@ struct LubanCompressionView: View {
             replaceHelp: "开启后压缩成功的图片会替换原文件；关闭后生成输出时间戳文件夹",
             dropSubtitle: "PNG、JPG、JPEG、WebP、HEIC 等，本地压缩无大小限制",
             stopLabel: "停止压缩",
+            startLabel: model.startButtonLabel,
             minimumCompressionSizeKB: $model.minimumCompressionSizeKB,
             onlyGitChangedImages: $model.onlyGitChangedImages,
             replaceOriginals: $model.replaceOriginals,
@@ -435,6 +439,7 @@ struct LubanCompressionView: View {
             onResetResult: { id in
                 Task { await model.resetResult(for: id) }
             },
+            onContinueCompression: { model.continueCompression(for: $0) },
             onDrop: { urls in
                 guard !urls.isEmpty else { return false }
                 model.select(urls: urls)
