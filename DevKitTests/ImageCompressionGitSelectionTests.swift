@@ -54,6 +54,84 @@ struct ImageCompressionGitSelectionTests {
         var startsEnabled: Bool { firstIsGit && self != .bothGitFilterOff }
     }
 
+    @Test(arguments: Tool.allCases)
+    func droppingGitProjectEnablesFilterBeforePublishingSelection(tool: Tool) async throws {
+        let suite = "GitProjectDrop-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        switch tool {
+        case .tinyPNG:
+            try await checkGitProjectDrop(TinyPNGModel(preferencesDefaults: defaults))
+        case .luban:
+            try await checkGitProjectDrop(LubanCompressionModel(preferencesDefaults: defaults))
+        case .webP:
+            try await checkGitProjectDrop(WebPConversionModel(preferencesDefaults: defaults))
+        }
+    }
+
+    private func checkGitProjectDrop<M: GitSelectionTestModel>(_ model: M) async throws {
+        let directory = try temporaryDirectory()
+        let outside = try temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            try? FileManager.default.removeItem(at: outside)
+        }
+        for name in ["clean.png", "staged.png", "unstaged.png"] {
+            try Data("original".utf8).write(to: directory.appendingPathComponent(name))
+        }
+        try initializeRepository(directory)
+        for name in ["staged.png", "unstaged.png", "untracked.png"] {
+            try Data("changed".utf8).write(to: directory.appendingPathComponent(name))
+        }
+        try git(["add", "staged.png"], in: directory)
+        let expected: Set<String> = ["staged.png", "unstaged.png", "untracked.png"]
+        let allImages = expected.union(["clean.png"])
+        await model.selectImages(urls: [directory], automaticallyFilterGitProjects: true).completion?.value
+        #expect(model.isGitFilterAvailable)
+        #expect(model.onlyGitChangedImages)
+        #expect(model.replaceOriginals)
+        #expect(Set(model.imageItems.map(\.id.lastPathComponent)) == expected)
+
+        // Turning the filter off remains effective during refreshes and individual-image drops.
+        model.onlyGitChangedImages = false
+        try await waitForScan(model)
+        model.refreshSelection()
+        try await waitForScan(model)
+        await model.selectImages(urls: [directory.appendingPathComponent("clean.png")],
+                                 automaticallyFilterGitProjects: true).completion?.value
+        #expect(!model.onlyGitChangedImages)
+        #expect(!model.replaceOriginals)
+        #expect(Set(model.imageItems.map(\.id.lastPathComponent)) == allImages)
+
+        // Cancelling an automatic mode change must retain the previous mode and list.
+        let pending = model.selectImages(urls: [directory], automaticallyFilterGitProjects: true).completion
+        model.stop()
+        await pending?.value
+        #expect(!model.onlyGitChangedImages)
+        #expect(Set(model.imageItems.map(\.id.lastPathComponent)) == allImages)
+
+        // An explicit new project drop can enable the mode again, even for an already-selected root.
+        await model.selectImages(urls: [directory], automaticallyFilterGitProjects: true).completion?.value
+        #expect(model.onlyGitChangedImages)
+        #expect(Set(model.imageItems.map(\.id.lastPathComponent)) == expected)
+        model.clearSelection()
+        try git(["add", "."], in: directory)
+        try git(["commit", "--quiet", "-m", "Commit all image fixtures"], in: directory)
+        await model.selectImages(urls: [directory], automaticallyFilterGitProjects: true).completion?.value
+        #expect(model.onlyGitChangedImages)
+        #expect(model.imageItems.isEmpty)
+        #expect(!model.canRun)
+        #expect(model.alertMessage == nil)
+
+        let outsideImage = outside.appendingPathComponent("outside.png")
+        try Data("outside".utf8).write(to: outsideImage)
+        await model.selectImages(urls: [outsideImage], automaticallyFilterGitProjects: true).completion?.value
+        #expect(!model.isGitFilterAvailable)
+        #expect(!model.onlyGitChangedImages)
+        #expect(!model.replaceOriginals)
+        #expect(Set(model.imageItems.map(\.id.lastPathComponent)) == allImages.union(["outside.png"]))
+    }
+
     @Test(arguments: Tool.allCases, Scenario.allCases)
     func gitSelectionAcrossTools(tool: Tool, scenario: Scenario) async throws {
         let suite = "GitSelection-\(UUID().uuidString)"

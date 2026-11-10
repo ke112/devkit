@@ -9,12 +9,14 @@ struct ImageCompressionScanResult: Sendable {
 /// 检查输入的工作树资格；实际 Git status 筛选失败时不会回退到普通扫描。
 enum GitChangedImageScanner {
     nonisolated static func scanSelection(
-        _ roots: [URL], onlyGitChangedImages: Bool, supportedExtensions: Set<String>,
+        _ roots: [URL], onlyGitChangedImages: Bool, automaticallyFilterGitProjects: Bool = false,
+        supportedExtensions: Set<String>,
         scanImage: @Sendable (URL) -> ImageScanResult
     ) throws -> ImageCompressionScanResult {
         try withAccess(to: roots) {
             let available = try canFilter(roots)
-            let usesGitFilter = onlyGitChangedImages && available
+            // Decide before discovery so dropping a project never performs an ordinary full-tree scan.
+            let usesGitFilter = available && (onlyGitChangedImages || automaticallyFilterGitProjects)
             let scans: [ImageScanResult]
             if usesGitFilter {
                 // Eligibility may fall back to normal selection, but a status failure must surface.

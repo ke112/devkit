@@ -5,6 +5,33 @@ import Testing
 @MainActor
 struct GitChangedImageScannerTests {
     @Test(arguments: [false, true])
+    func automaticGitProjectScanNeverEnumeratesOrdinaryImages(worktree: Bool) throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try initializeRepository(directory)
+        try write("clean.png", in: directory)
+        try git(["add", "."], in: directory)
+        try commit(in: directory)
+        let root: URL
+        if worktree {
+            root = directory.appendingPathComponent("linked-worktree", isDirectory: true)
+            try git(["worktree", "add", "--detach", root.path], in: directory)
+        } else {
+            root = directory
+        }
+        try write("changed.png", in: root)
+        let batch = try GitChangedImageScanner.scanSelection(
+            [root], onlyGitChangedImages: false, automaticallyFilterGitProjects: true,
+            supportedExtensions: ["png"], scanImage: { _ in
+                Issue.record("Automatic Git filtering must run before ordinary image enumeration")
+                return ImageScanResult(images: [])
+            }
+        )
+        #expect(batch.gitFilterAvailable && batch.usesGitFilter)
+        #expect(batch.scans[0].images.map(\.url.lastPathComponent) == ["changed.png"])
+    }
+
+    @Test(arguments: [false, true])
     func excludedDirectoryAliasCannotAdmitDirectChildImages(gitOnly: Bool) throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -320,7 +347,8 @@ struct GitChangedImageScannerTests {
         #expect(!empty.gitFilterAvailable && !empty.usesGitFilter && empty.scans.isEmpty)
     }
 
-    @Test func validWorktreeWithFailingStatusDoesNotFallBackToAllImages() throws {
+    @Test(arguments: [false, true])
+    func validWorktreeWithFailingStatusDoesNotFallBackToAllImages(automatic: Bool) throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         try initializeRepository(directory)
@@ -329,7 +357,11 @@ struct GitChangedImageScannerTests {
         #expect(try GitChangedImageScanner.canFilter([directory]))
         do {
             _ = try GitChangedImageScanner.scanSelection(
-                [directory], onlyGitChangedImages: true, supportedExtensions: ["png"], scanImage: Self.ordinaryScan
+                [directory], onlyGitChangedImages: !automatic, automaticallyFilterGitProjects: automatic,
+                supportedExtensions: ["png"], scanImage: { _ in
+                    Issue.record("A Git status failure must not run ordinary image enumeration")
+                    return ImageScanResult(images: [])
+                }
             )
             Issue.record("A Git status failure must not silently select every image")
         } catch {

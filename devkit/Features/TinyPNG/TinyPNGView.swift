@@ -49,7 +49,7 @@ struct TinyPNGView: View {
             onContinueCompression: { model.continueCompression(for: $0) },
             onDrop: { urls in
                 guard !urls.isEmpty else { return false }
-                return model.select(urls: urls)
+                return model.selectImages(urls: urls, automaticallyFilterGitProjects: true).accepted
             },
             onClear: { model.clearSelection() },
             onStop: { model.stop() },

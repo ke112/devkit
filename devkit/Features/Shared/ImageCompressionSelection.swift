@@ -22,9 +22,13 @@ final class ImageCompressionGitOptions {
         isEnabled = enabled && isAvailable
     }
 
-    func updateAvailability(_ available: Bool) {
+    func updateAvailability(_ available: Bool, enabled: Bool? = nil) {
         isAvailable = available
-        if !available { isEnabled = false }
+        if let enabled {
+            isEnabled = enabled && available
+        } else if !available {
+            isEnabled = false
+        }
         committedEnabled = isEnabled
     }
 
@@ -86,6 +90,7 @@ final class ImageCompressionSelectionState<Item: SelectableImageCompressionTaskI
     fileprivate let gitOptions = ImageCompressionGitOptions()
     fileprivate var worker: Task<ImageCompressionScanResult, Error>?
     fileprivate var pendingURLs: [URL] = []
+    fileprivate var pendingGitProjectDrop = false
     fileprivate var history: [Item] = []
     fileprivate var isRefreshing = false
     fileprivate var token = UUID()
@@ -97,6 +102,7 @@ final class ImageCompressionSelectionState<Item: SelectableImageCompressionTaskI
         worker = nil
         token = UUID()
         pendingURLs = []
+        pendingGitProjectDrop = false
         isScanning = false
         isRefreshing = false
     }
@@ -186,7 +192,8 @@ extension ImageCompressionSelectionModel {
     /// One selection transaction for all tools: validate, scan off-main, restore choices, publish, then run.
     @discardableResult
     func selectImages(
-        urls: [URL], refreshing: Bool = false, startAfterScan: Bool = false
+        urls: [URL], refreshing: Bool = false, startAfterScan: Bool = false,
+        automaticallyFilterGitProjects: Bool = false
     ) -> (accepted: Bool, completion: Task<Void, Never>?) {
         let state = selectionState
         guard !isRunning, !isRestoring, !state.isRefreshing else { return (false, nil) }
@@ -209,6 +216,9 @@ extension ImageCompressionSelectionModel {
         let newRoots = accepted.filter { input in
             refreshing || !accepted.contains { $0.path != input.path && input.path.hasPrefix($0.path + "/") }
         }
+        // Keep an unfinished directory drop's intent when another drop supersedes its scan.
+        let autoFilter = (!refreshing && state.pendingGitProjectDrop)
+            || (automaticallyFilterGitProjects && valid.contains { ImageTaskScanner.isDirectory($0) })
         state.worker?.cancel()
         var seenRoots = Set<String>()
         state.pendingURLs = (refreshing ? newRoots : selectedURLs + state.pendingURLs + newRoots)
@@ -217,6 +227,7 @@ extension ImageCompressionSelectionModel {
         let token = state.token
         state.isRefreshing = refreshing
         state.isScanning = true
+        state.pendingGitProjectDrop = autoFilter
         prepareForSelectionScan()
         operationStatus = "正在扫描图片"
         operationStatusSystemImage = "arrow.triangle.2.circlepath"
@@ -226,7 +237,7 @@ extension ImageCompressionSelectionModel {
         let gitOnly = onlyGitChangedImages
         let worker = Task.detached(priority: .userInitiated) {
             try GitChangedImageScanner.scanSelection(
-                scanRoots, onlyGitChangedImages: gitOnly,
+                scanRoots, onlyGitChangedImages: gitOnly, automaticallyFilterGitProjects: autoFilter,
                 supportedExtensions: configuration.supportedExtensions, scanImage: configuration.scan
             )
         }
@@ -236,6 +247,7 @@ extension ImageCompressionSelectionModel {
             guard let self, state.token == token, !worker.isCancelled else { return }
             state.worker = nil
             state.pendingURLs = []
+            state.pendingGitProjectDrop = false
             state.isScanning = false
             state.isRefreshing = false
             state.history = previous
@@ -247,7 +259,7 @@ extension ImageCompressionSelectionModel {
                 if case .failure(let error) = outcome { self.reportGitScanFailure(error) }
                 return
             }
-            state.gitOptions.updateAvailability(batch.gitFilterAvailable)
+            state.gitOptions.updateAvailability(batch.gitFilterAvailable, enabled: batch.usesGitFilter)
             var knownImages = Set<URL>()
             var scanned: [ImageItem] = []
             for (root, result) in zip(roots, batch.scans) {

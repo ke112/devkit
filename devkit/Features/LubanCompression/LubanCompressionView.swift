@@ -442,8 +442,7 @@ struct LubanCompressionView: View {
             onContinueCompression: { model.continueCompression(for: $0) },
             onDrop: { urls in
                 guard !urls.isEmpty else { return false }
-                model.select(urls: urls)
-                return true
+                return model.selectImages(urls: urls, automaticallyFilterGitProjects: true).accepted
             },
             onClear: { model.clearSelection() },
             onStop: { model.stop() },
