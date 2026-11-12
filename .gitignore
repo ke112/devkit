@@ -1,9 +1,54 @@
+# Xcode and SwiftPM build/dependency caches
 /build/
+/Build/
 /DerivedData/
-*.xcresult
-.derivedData/
-
+/DerivedData-*/
+/.derivedData/
+/.derivedData-*/
+/dist/
 .build/
+.swiftpm/
+SourcePackages/
+Index.noindex/
+ModuleCache.noindex/
+SDKStatCaches.noindex/
+DerivedSources/
+
+# Generated applications, distributions, symbols and test results
+*.app/
+*.dmg
+*.pkg
+*.zip
+*.dSYM/
+*.xcarchive/
+*.xcresult
+*.xcactivitylog
+GitCommitHash.txt
+
+# Xcode personal state; retain projects, shared schemes and Package.resolved
+**/xcuserdata/
+*.xcuserstate
+
+# Python environments and local caches (including bundled-script bytecode)
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+
+# Finder metadata
+.DS_Store
+._*
+.AppleDouble/
+
+# Local configuration and diagnostic captures
+.env
+.env.*
+*.log
+*.har
 
 # Local doc-tool draft folders (e.g. Feishu weekly report drafts)
 draft_*_folder/
