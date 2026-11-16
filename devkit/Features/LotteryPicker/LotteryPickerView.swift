@@ -6,6 +6,7 @@ struct LotteryPickerView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var selection: LotterySelection?
     @State private var hasCopied = false
+    @State private var isPrizeRulesPresented = false
 
     private let red = Color(red: 0.82, green: 0.12, blue: 0.25)
     private let blue = Color(red: 0.13, green: 0.34, blue: 0.79)
@@ -45,6 +46,19 @@ struct LotteryPickerView: View {
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .navigationTitle("双色球随机选号")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    isPrizeRulesPresented = true
+                } label: {
+                    Label("中奖规则", systemImage: "list.bullet.rectangle")
+                }
+                .help("查看奖级、中奖条件和单注奖金")
+            }
+        }
+        .sheet(isPresented: $isPrizeRulesPresented) {
+            LotteryPrizeRulesView()
+        }
     }
 
     private var ticket: some View {
