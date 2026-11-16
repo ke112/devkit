@@ -1,8 +1,14 @@
 # DevKit
 
-DevKit 是一个原生 macOS 开发工具集合，当前包含 iOS 模拟器管理、图片叠加、制作证件照、去除图片水印、iOS App 发版、TinyPNG、WebP 和媒体压缩八个独立模块。界面使用 SwiftUI，系统集成与图片处理使用 AppKit、ImageIO、AVFoundation 和 Foundation，不依赖第三方库。
+DevKit 是一个原生 macOS 开发工具集合，包含 iOS 模拟器管理、图片叠加、制作证件照、去除图片水印、iOS App 发版、TinyPNG、Luban、WebP、媒体压缩和双色球随机选号。界面使用 SwiftUI，系统集成与图片处理使用 AppKit、ImageIO、AVFoundation 和 Foundation，Luban 图片压缩使用固定版本的 Luban 库。
 
 ## 功能
+
+### 双色球随机选号
+
+- 点击按钮随机生成一注：从 01～33 中无重复选取 6 个红球，从 01～16 中选取 1 个蓝球
+- 红球升序展示，号码顺序不影响组合；每注金额为 2 元
+- 支持再次生成和复制号码，仅在本机选号，不涉及购票或支付
 
 ### iOS 模拟器管理
 

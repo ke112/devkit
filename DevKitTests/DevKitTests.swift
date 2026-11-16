@@ -269,6 +269,7 @@ struct DevKitTests {
             HomeFeatureSetting(feature: .mediaCompression, isVisible: true),
             HomeFeatureSetting(feature: .watermarkRemoval, isVisible: false),
             HomeFeatureSetting(feature: .idPhoto, isVisible: true),
+            HomeFeatureSetting(feature: .lotteryPicker, isVisible: true),
         ])
     }
 
@@ -288,6 +289,7 @@ struct DevKitTests {
             HomeFeatureSetting(feature: .mediaCompression, isVisible: true),
             HomeFeatureSetting(feature: .watermarkRemoval, isVisible: false),
             HomeFeatureSetting(feature: .idPhoto, isVisible: true),
+            HomeFeatureSetting(feature: .lotteryPicker, isVisible: true),
         ])
     }
 
@@ -762,7 +764,7 @@ struct DevKitTests {
 
         #expect(
             settings.map(\.feature)
-                == [.imageOverlay, .simulatorManagement, .appStoreRelease, .tinyPNG, .lubanCompression, .webPConversion, .mediaCompression, .watermarkRemoval, .idPhoto]
+                == [.imageOverlay, .simulatorManagement, .appStoreRelease, .tinyPNG, .lubanCompression, .webPConversion, .mediaCompression, .watermarkRemoval, .idPhoto, .lotteryPicker]
         )
     }
 

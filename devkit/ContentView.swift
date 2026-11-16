@@ -82,6 +82,8 @@ struct ContentView: View {
                     WatermarkRemovalView()
                 case .idPhoto:
                     IDPhotoView()
+                case .lotteryPicker:
+                    LotteryPickerView()
                 }
             }
         }
@@ -106,6 +108,7 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
     case mediaCompression
     case watermarkRemoval
     case idPhoto
+    case lotteryPicker
 
     var id: Self { self }
 
@@ -129,6 +132,8 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
             "去除图片水印"
         case .idPhoto:
             "制作证件照"
+        case .lotteryPicker:
+            "双色球随机选号"
         }
     }
 
@@ -152,6 +157,8 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
             "智能识别并去除水印"
         case .idPhoto:
             "换底色生成证件照"
+        case .lotteryPicker:
+            "随机选出 6 红球 + 1 蓝球"
         }
     }
 
@@ -175,6 +182,8 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
             "eraser"
         case .idPhoto:
             "person.crop.rectangle"
+        case .lotteryPicker:
+            "dice"
         }
     }
 }
