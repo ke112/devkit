@@ -48,6 +48,14 @@ struct LotteryPickerView: View {
         .navigationTitle("双色球随机选号")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
+                NavigationLink {
+                    LotteryHistoryView()
+                } label: {
+                    Label("历史开奖", systemImage: "chart.xyaxis.line")
+                }
+                .help("查看历史开奖号码与走势")
+            }
+            ToolbarItem(placement: .primaryAction) {
                 Button {
                     isPrizeRulesPresented = true
                 } label: {
