@@ -114,9 +114,17 @@ struct LotteryHistoryView: View {
                 .accessibilityLabel("增加一注")
                 .disabled(forecast == nil)
             }
-            Text("每个号码的权重为历史出现次数加 1，红球每注不重复。公平独立开奖时，每注中一等奖的概率都是 1 / 17,721,088。")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+            if let forecast {
+                Text(forecast.summary).font(.callout)
+                Text("推算使用全部 \(model.draws.count) 期历史数据 · 预热 \(model.draws.count - forecast.evaluated) 期 · 逐期回测 \(forecast.evaluated) 期")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if forecast.evaluated > 0 {
+                    Text("相对均匀随机的平均对数得分差 \(String(format: "%+.4f", forecast.logGain / Double(forecast.evaluated)))（正值更好）")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
             Divider()
             ScrollView {
                 LazyVStack(spacing: 0) {
