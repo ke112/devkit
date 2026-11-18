@@ -49,6 +49,14 @@ struct LotteryPickerView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 NavigationLink {
+                    LotteryHistoryView(presentation: .forecast)
+                } label: {
+                    Label("下期推算", systemImage: "function")
+                }
+                .help("根据历史开奖生成下期参考号码")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                NavigationLink {
                     LotteryHistoryView()
                 } label: {
                     Label("历史开奖", systemImage: "chart.xyaxis.line")

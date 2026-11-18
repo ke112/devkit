@@ -34,6 +34,37 @@ struct LotterySelectionTests {
         #expect(LotterySelection.formatted(9) == "09")
         #expect(LotterySelection.formatted(33) == "33")
     }
+
+    @Test func historicalWeightsInfluenceSamplingWithoutExcludingUnseenNumbers() {
+        let favoredReds = Set([1, 2, 3, 4, 5, 33])
+        let history = (1...20).map {
+            LotteryDraw(issue: String(2026000 + $0), date: "2026-01-01", redNumbers: favoredReds.sorted(), blueNumber: 16)
+        }
+        let forecast = LotteryForecast(draws: history)
+        let baseline = LotteryForecast(draws: [])
+        var biasedGenerator = SeededGenerator()
+        var uniformGenerator = SeededGenerator()
+        var redHits = 0
+        var uniformRedHits = 0
+        var blueHits = 0
+        var reachedReds = Set<Int>()
+        var reachedBlues = Set<Int>()
+        for _ in 0..<1_000 {
+            let selection = forecast.next(using: &biasedGenerator)
+            let uniform = baseline.next(using: &uniformGenerator)
+            #expect(selection.redNumbers.count == 6)
+            #expect(selection.redNumbers == Set(selection.redNumbers).sorted())
+            redHits += favoredReds.intersection(selection.redNumbers).count
+            uniformRedHits += favoredReds.intersection(uniform.redNumbers).count
+            if selection.blueNumber == 16 { blueHits += 1 }
+            reachedReds.formUnion(selection.redNumbers)
+            reachedBlues.insert(selection.blueNumber)
+        }
+        #expect(redHits > 3 * uniformRedHits)
+        #expect((500...670).contains(blueHits))
+        #expect(reachedReds == Set(1...33))
+        #expect(reachedBlues == Set(1...16))
+    }
 }
 
 private struct SeededGenerator: RandomNumberGenerator {

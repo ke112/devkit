@@ -2,19 +2,26 @@ import SwiftUI
 
 struct LotteryHistoryView: View {
     @State private var model = LotteryHistoryModel()
-    @State private var presentation = Presentation.results
+    @State private var presentation: Presentation
     @State private var refreshID = 0
+    @State private var forecast: LotteryForecast?
+    @State private var tickets: [LotterySelection] = []
 
-    private enum Presentation: String, CaseIterable {
+    enum Presentation: String, CaseIterable {
         case results = "逐期开奖"
         case trend = "号码走势"
+        case forecast = "下期推算"
+    }
+
+    init(presentation: Presentation = .results) {
+        _presentation = State(initialValue: presentation)
     }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .center, spacing: 24) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("2025001～2026032")
+                    Text(historyRange)
                         .font(.system(size: 20, weight: .bold, design: .rounded))
                     HStack(spacing: 8) {
                         Text(model.draws.isEmpty ? "历史开奖号码" : "共 \(model.draws.count) 期")
@@ -31,7 +38,7 @@ struct LotteryHistoryView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 220)
+                .frame(width: 270)
             }
             .padding(24)
 
@@ -53,6 +60,8 @@ struct LotteryHistoryView: View {
                     results
                 case .trend:
                     LotteryTrendView(draws: model.draws)
+                case .forecast:
+                    forecastResults
                 }
             }
         }
@@ -66,10 +75,71 @@ struct LotteryHistoryView: View {
                     Label(model.isLoading ? "正在读取" : "刷新", systemImage: "arrow.clockwise")
                 }
                 .disabled(model.isLoading)
-                .help("重新读取指定范围内的历史开奖")
+                .help("检查新开奖并补齐历史记录")
             }
         }
         .task(id: refreshID) { await model.load() }
+        .onChange(of: model.draws.last?.issue, initial: true) {
+            guard !model.draws.isEmpty else { return }
+            let updated = LotteryForecast(draws: model.draws)
+            forecast = updated
+            tickets = (0..<max(1, tickets.count)).map { _ in updated.next() }
+        }
+    }
+
+    private var historyRange: String {
+        guard let first = model.draws.first, let last = model.draws.last else { return "历史开奖" }
+        return "\(first.issue)～\(last.issue)"
+    }
+
+    private var forecastResults: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                Text("下期参考号码")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    if tickets.count > 1 { tickets.removeLast() }
+                } label: {
+                    Image(systemName: "minus")
+                }
+                .accessibilityLabel("减少一注")
+                .disabled(tickets.count <= 1)
+                Text("\(tickets.count) 注").monospacedDigit()
+                Button {
+                    if let forecast { tickets.append(forecast.next()) }
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .accessibilityLabel("增加一注")
+                .disabled(forecast == nil)
+            }
+            Text("每个号码的权重为历史出现次数加 1，红球每注不重复。公平独立开奖时，每注中一等奖的概率都是 1 / 17,721,088。")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Divider()
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(tickets.indices, id: \.self) { index in
+                        HStack(spacing: 16) {
+                            Text("第 \(index + 1) 注").monospacedDigit()
+                            Spacer()
+                            LotteryDrawBalls(redNumbers: tickets[index].redNumbers, blueNumber: tickets[index].blueNumber)
+                            Button {
+                                if let forecast { tickets[index] = forecast.next() }
+                            } label: {
+                                Image(systemName: "shuffle")
+                            }
+                            .accessibilityLabel("重新生成第 \(index + 1) 注")
+                            .help("重新生成这一注")
+                        }
+                        .padding(.vertical, 12)
+                        Divider()
+                    }
+                }
+            }
+        }
+        .padding(24)
     }
 
     @ViewBuilder
@@ -131,18 +201,28 @@ struct LotteryHistoryView: View {
 }
 
 struct LotteryDrawBalls: View {
-    let draw: LotteryDraw
+    let redNumbers: [Int]
+    let blueNumber: Int
+
+    init(redNumbers: [Int], blueNumber: Int) {
+        self.redNumbers = redNumbers
+        self.blueNumber = blueNumber
+    }
+
+    init(draw: LotteryDraw) {
+        self.init(redNumbers: draw.redNumbers, blueNumber: draw.blueNumber)
+    }
 
     var body: some View {
         HStack(spacing: 8) {
-            ForEach(draw.redNumbers, id: \.self) { number in
+            ForEach(redNumbers, id: \.self) { number in
                 ball(number, color: .red)
             }
             Text("+").foregroundStyle(.tertiary)
-            ball(draw.blueNumber, color: .blue)
+            ball(blueNumber, color: .blue)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("红球 \(draw.redNumbers.map(LotterySelection.formatted).joined(separator: "、"))，蓝球 \(LotterySelection.formatted(draw.blueNumber))")
+        .accessibilityLabel("红球 \(redNumbers.map(LotterySelection.formatted).joined(separator: "、"))，蓝球 \(LotterySelection.formatted(blueNumber))")
     }
 
     private func ball(_ number: Int, color: Color) -> some View {

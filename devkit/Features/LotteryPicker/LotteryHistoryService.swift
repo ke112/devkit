@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-struct LotteryDraw: Equatable, Identifiable {
+struct LotteryDraw: Codable, Equatable, Identifiable {
     let issue: String
     let date: String
     let redNumbers: [Int]
@@ -29,58 +29,182 @@ enum LotteryHistoryError: LocalizedError {
 
 enum LotteryHistoryService {
     static let startIssue = 2025001
-    static let endIssue = 2026032
-    static let sourceURL = URL(string: "https://www.swlc.net.cn/lottery/ssq.html?view=previous&limit=100&weekday=&start_issue=2025001&end_issue=2026032")!
+    static let sourceURL = URL(string: "https://www.swlc.net.cn/lottery/ssq.html")!
+    private static let loader = LotteryHistoryLoader(cache: LotteryHistoryCache(), loadPage: loadHTML)
 
-    static func fetch(
-        loadPage: (URL) async throws -> String = loadHTML
-    ) async throws -> [LotteryDraw] {
-        var upperIssue = endIssue
-        var draws: [String: LotteryDraw] = [:]
+    static func fetchLatest() async throws -> LotteryHistoryResult {
+        try await loader.fetch()
+    }
 
-        // 网站最多返回 100 期；按本页最早期号向前查询，不能把一期号差当作期数。
-        while upperIssue >= startIssue {
-            try Task.checkCancellation()
-            var components = URLComponents(url: sourceURL, resolvingAgainstBaseURL: false)!
-            components.queryItems = [
-                URLQueryItem(name: "view", value: "previous"),
-                URLQueryItem(name: "limit", value: "100"),
-                URLQueryItem(name: "weekday", value: ""),
-                URLQueryItem(name: "start_issue", value: String(startIssue)),
-                URLQueryItem(name: "end_issue", value: String(upperIssue)),
-            ]
-            guard let url = components.url else { throw LotteryHistoryError.invalidResponse }
-            let page = try parse(try await loadPage(url))
-            try Task.checkCancellation()
-            guard !page.isEmpty else { throw LotteryHistoryError.incompleteHistory }
+    static func cachedHistory() -> [LotteryDraw] {
+        loader.cachedHistory()
+    }
 
-            for draw in page {
-                guard let issue = Int(draw.issue), (startIssue...upperIssue).contains(issue),
-                      draws.updateValue(draw, forKey: draw.issue) == nil else {
+    static func refresh(
+        cache: LotteryHistoryCache,
+        loadPage: (URL) async throws -> String
+    ) async throws -> LotteryHistoryResult {
+        var state = cache.readState()
+        var cached = state.draws
+        let fallback = cached.last.flatMap { Int($0.issue) }.flatMap { end in
+            (try? validate(cached, start: startIssue, end: end)) == nil ? nil : cached
+        } ?? []
+        do {
+            if state.pending == nil, let last = cached.last.flatMap({ Int($0.issue) }) {
+                for (lower, upper) in missingRanges(cached, last: last) {
+                    let page = try await fetchMissing(lower: lower, upper: upper, loadPage: loadPage)
+                    cached.append(contentsOf: page)
+                    state.draws = cached.sorted { $0.issue < $1.issue }
+                    try cache.save(state)
+                }
+                cached.sort { $0.issue < $1.issue }
+            }
+            let resuming = state.pending != nil
+            var pending = state.pending ?? LotteryHistoryCache.Pending(
+                lower: cached.last.flatMap { Int($0.issue) }.map { $0 + 1 } ?? startIssue,
+                upper: nil,
+                draws: []
+            )
+            while pending.upper.map({ $0 >= pending.lower }) ?? true {
+                let page = try parsePage(
+                    try await loadPage(pageURL(start: pending.lower, end: pending.upper)),
+                    allowEmpty: true
+                )
+                if page.isEmpty {
+                    pending.upper = pending.lower - 1
+                    if !pending.draws.isEmpty {
+                        state.pending = pending
+                        try cache.save(state)
+                    }
+                    break
+                }
+                let known = Set(pending.draws.map(\.issue)).union(cached.map(\.issue))
+                for draw in page {
+                    guard let issue = Int(draw.issue), issue >= pending.lower,
+                          pending.upper.map({ issue <= $0 }) ?? true,
+                          !known.contains(draw.issue) else {
+                        throw LotteryHistoryError.incompleteHistory
+                    }
+                }
+                guard Set(page.map(\.issue)).count == page.count,
+                      let earliest = page.compactMap({ Int($0.issue) }).min() else {
                     throw LotteryHistoryError.incompleteHistory
                 }
+                pending.draws.append(contentsOf: page)
+                let previous = earliest - 1
+                pending.upper = previous % 1000 == 0 ? previous - 1 : previous
+                state.pending = pending
+                try cache.save(state)
+                try Task.checkCancellation()
             }
-            guard let earliest = page.compactMap({ Int($0.issue) }).min() else {
-                throw LotteryHistoryError.invalidResponse
+            let available = cached + pending.draws
+            if let last = available.compactMap({ Int($0.issue) }).max() {
+                for (lower, upper) in missingRanges(available, last: last) {
+                    let page = try await fetchMissing(lower: lower, upper: upper, loadPage: loadPage)
+                    pending.draws.append(contentsOf: page)
+                    state.pending = pending
+                    try cache.save(state)
+                }
             }
-            upperIssue = earliest - 1
+            let ordered = (cached + pending.draws).sorted { $0.issue < $1.issue }
+            try validate(ordered, start: startIssue, end: Int(ordered.last?.issue ?? "") ?? 0)
+            state.draws = ordered
+            state.pending = nil
+            try cache.save(state)
+            if resuming {
+                return try await refresh(cache: cache, loadPage: loadPage)
+            }
+            return LotteryHistoryResult(draws: ordered, refreshError: nil)
+        } catch {
+            if Task.isCancelled || error is CancellationError { throw error }
+            guard !fallback.isEmpty else { throw error }
+            return LotteryHistoryResult(draws: fallback, refreshError: error.localizedDescription)
         }
+    }
 
-        let ordered = draws.values.sorted { $0.issue < $1.issue }
-        guard ordered.first?.issue == String(startIssue), ordered.last?.issue == String(endIssue) else {
+    private static func missingRanges(_ draws: [LotteryDraw], last: Int) -> [(Int, Int)] {
+        let known = Set(draws.compactMap { Int($0.issue) })
+        var ranges: [(Int, Int)] = []
+        for year in (startIssue / 1000)...(last / 1000) {
+            let first = max(startIssue, year * 1000 + 1)
+            let lastInYear = known.filter { $0 / 1000 == year }.max() ?? (year * 1000 + 999)
+            guard first <= lastInYear else { continue }
+            for issue in first...lastInYear where !known.contains(issue) {
+                if let previous = ranges.last, previous.1 + 1 == issue, issue - previous.0 < 100 {
+                    ranges[ranges.count - 1].1 = issue
+                } else {
+                    ranges.append((issue, issue))
+                }
+            }
+        }
+        return ranges
+    }
+
+    private static func fetchMissing(
+        lower: Int,
+        upper: Int,
+        loadPage: (URL) async throws -> String
+    ) async throws -> [LotteryDraw] {
+        let page = try parsePage(try await loadPage(pageURL(start: lower, end: upper)), allowEmpty: true)
+        guard Set(page.map(\.issue)).count == page.count,
+              page.allSatisfy({ Int($0.issue).map { (lower...upper).contains($0) } == true }),
+              Set(page.compactMap { Int($0.issue) }) == Set(lower...upper) else {
             throw LotteryHistoryError.incompleteHistory
         }
-        for year in (startIssue / 1000)...(endIssue / 1000) {
+        return page
+    }
+
+    private static func pageURL(start: Int, end: Int?) throws -> URL {
+        var components = URLComponents(url: sourceURL, resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "view", value: "previous"),
+            URLQueryItem(name: "limit", value: "100"),
+            URLQueryItem(name: "weekday", value: ""),
+            URLQueryItem(name: "start_issue", value: String(start)),
+        ]
+        if let end {
+            components.queryItems?.append(URLQueryItem(name: "end_issue", value: String(end)))
+        }
+        guard let url = components.url else { throw LotteryHistoryError.invalidResponse }
+        return url
+    }
+
+    fileprivate static func validate(_ ordered: [LotteryDraw], start: Int, end: Int) throws {
+        guard start <= end, ordered.first?.issue == String(start), ordered.last?.issue == String(end) else {
+            throw LotteryHistoryError.incompleteHistory
+        }
+        for year in (start / 1000)...(end / 1000) {
             let issues = ordered.compactMap { Int($0.issue) }.filter { $0 / 1000 == year }
             guard let last = issues.last,
-                  issues == Array((year * 1000 + 1)...last) else {
+                  last >= max(start, year * 1000 + 1),
+                  issues == Array(max(start, year * 1000 + 1)...last) else {
                 throw LotteryHistoryError.incompleteHistory
             }
         }
-        return ordered
+        guard validDraws(ordered) else { throw LotteryHistoryError.incompleteHistory }
+    }
+
+    fileprivate static func validDraws(_ draws: [LotteryDraw]) -> Bool {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.isLenient = false
+        return draws.allSatisfy { draw in
+            draw.issue.range(of: #"^\d{7}$"#, options: .regularExpression) != nil
+                && draw.date.prefix(4) == draw.issue.prefix(4)
+                && formatter.date(from: draw.date).map { formatter.string(from: $0) == draw.date } == true
+                && draw.redNumbers.count == 6 && Set(draw.redNumbers).count == 6
+                && draw.redNumbers.allSatisfy { (1...33).contains($0) }
+                && (1...16).contains(draw.blueNumber)
+        }
     }
 
     static func parse(_ html: String) throws -> [LotteryDraw] {
+        try parsePage(html, allowEmpty: false)
+    }
+
+    private static func parsePage(_ html: String, allowEmpty: Bool) throws -> [LotteryDraw] {
         let dateFormatter = DateFormatter()
         dateFormatter.locale = Locale(identifier: "en_US_POSIX")
         dateFormatter.timeZone = TimeZone(secondsFromGMT: 0)
@@ -108,7 +232,12 @@ enum LotteryHistoryService {
             }
             draws.append(LotteryDraw(issue: issue, date: date, redNumbers: reds.sorted(), blueNumber: blue))
         }
-        guard !draws.isEmpty else { throw LotteryHistoryError.invalidResponse }
+        if draws.isEmpty {
+            let emptyTable = #"<table\b[^>]*class\s*=\s*["'][^"']*\blottery-history-table--ssq\b[^"']*["'][^>]*>[\s\S]*?<tbody[^>]*>\s*</tbody>\s*</table>"#
+            guard allowEmpty, html.range(of: emptyTable, options: [.regularExpression, .caseInsensitive]) != nil else {
+                throw LotteryHistoryError.invalidResponse
+            }
+        }
         return draws
     }
 
@@ -140,6 +269,118 @@ enum LotteryHistoryService {
     }
 }
 
+struct LotteryHistoryResult {
+    let draws: [LotteryDraw]
+    let refreshError: String?
+}
+
+final class LotteryHistoryLoader {
+    private let cache: LotteryHistoryCache
+    private let loadPage: (URL) async throws -> String
+    private var task: (id: UUID, value: Task<LotteryHistoryResult, Error>)?
+
+    init(cache: LotteryHistoryCache, loadPage: @escaping (URL) async throws -> String) {
+        self.cache = cache
+        self.loadPage = loadPage
+    }
+
+    func cachedHistory() -> [LotteryDraw] {
+        let draws = cache.read()
+        guard let last = draws.last.flatMap({ Int($0.issue) }),
+              (try? LotteryHistoryService.validate(draws, start: LotteryHistoryService.startIssue, end: last)) != nil else {
+            return []
+        }
+        return draws
+    }
+
+    func fetch() async throws -> LotteryHistoryResult {
+        let current: (id: UUID, value: Task<LotteryHistoryResult, Error>)
+        if let task {
+            current = task
+        } else {
+            let newTask = Task { try await LotteryHistoryService.refresh(cache: cache, loadPage: loadPage) }
+            current = (UUID(), newTask)
+            task = current
+        }
+        defer {
+            if task?.id == current.id { task = nil }
+        }
+        let result = try await current.value.value
+        try Task.checkCancellation()
+        return result
+    }
+}
+
+final class LotteryHistoryCache {
+    struct Pending: Codable {
+        let lower: Int
+        var upper: Int?
+        var draws: [LotteryDraw]
+    }
+
+    struct Contents: Codable {
+        var lottery: String = "ssq"
+        var draws: [LotteryDraw]
+        var pending: Pending? = nil
+    }
+
+    private let url: URL
+
+    init(url: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("DevKit/lottery-history-ssq.json")) {
+        self.url = url
+    }
+
+    func read() -> [LotteryDraw] {
+        readState().draws
+    }
+
+    func readState() -> Contents {
+        guard let data = try? Data(contentsOf: url),
+              let contents = try? JSONDecoder().decode(Contents.self, from: data),
+              contents.lottery == "ssq",
+              Set(contents.draws.map(\.issue)).count == contents.draws.count,
+              contents.draws.allSatisfy({ (Int($0.issue) ?? 0) >= LotteryHistoryService.startIssue }),
+              LotteryHistoryService.validDraws(contents.draws) else {
+            return Contents(draws: [])
+        }
+        var state = contents
+        state.draws.sort { $0.issue < $1.issue }
+        if let pending = state.pending {
+            let ids = pending.draws.map(\.issue)
+            let cached = Set(state.draws.map(\.issue))
+            guard pending.lower >= LotteryHistoryService.startIssue,
+                  pending.lower == (state.draws.last.flatMap({ Int($0.issue) }).map { $0 + 1 } ?? LotteryHistoryService.startIssue),
+                  !pending.draws.isEmpty,
+                  Set(ids).count == ids.count,
+                  Set(ids).isDisjoint(with: cached),
+                  LotteryHistoryService.validDraws(pending.draws),
+                  pending.draws.allSatisfy({ draw in
+                      guard let issue = Int(draw.issue), issue >= pending.lower else { return false }
+                      return pending.upper.map { issue > $0 } ?? false
+                  }) else {
+                state.pending = nil
+                return state
+            }
+        }
+        return state
+    }
+
+    func write(_ draws: [LotteryDraw]) {
+        do {
+            try save(Contents(draws: draws))
+        } catch {
+            NSLog("开奖历史缓存写入失败：%@", error.localizedDescription)
+        }
+    }
+
+    func save(_ contents: Contents) throws {
+        let data = try JSONEncoder().encode(contents)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: url, options: .atomic)
+    }
+}
+
 @MainActor
 @Observable
 final class LotteryHistoryModel {
@@ -147,15 +388,23 @@ final class LotteryHistoryModel {
     private(set) var isLoading = false
     private(set) var errorMessage: String?
 
-    func load(fetch: () async throws -> [LotteryDraw] = { try await LotteryHistoryService.fetch() }) async {
+    func load(fetch: (() async throws -> [LotteryDraw])? = nil) async {
         guard !isLoading else { return }
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
         do {
-            let result = try await fetch()
+            let result: LotteryHistoryResult
+            if let fetch {
+                result = LotteryHistoryResult(draws: try await fetch(), refreshError: nil)
+            } else {
+                let cached = LotteryHistoryService.cachedHistory()
+                if !cached.isEmpty { draws = cached }
+                result = try await LotteryHistoryService.fetchLatest()
+            }
             try Task.checkCancellation()
-            draws = result
+            draws = result.draws
+            errorMessage = result.refreshError
         } catch {
             guard !Task.isCancelled else { return }
             errorMessage = error.localizedDescription
