@@ -26,6 +26,11 @@ struct LotterySelection: Equatable {
 }
 
 struct LotteryForecast {
+    enum SelectionMode {
+        case highestScore
+        case sample
+    }
+
     private static let redBaseline = (0...6).map { overlap in
         Double(combinations(6, choosing: overlap) * combinations(27, choosing: 6 - overlap))
             / Double(combinations(33, choosing: 6))
@@ -98,20 +103,24 @@ struct LotteryForecast {
         let red = Self.active(reds).map { "红球参考前 \($0 + 1) 期的重号个数" }
         let blue = Self.active(blues).map { "蓝球参考前 \($0 + 1) 期的循环位移" }
         guard evaluated > 0 else { return "正在积累验证样本，当前按均匀概率生成。" }
-        return [red ?? "红球未检出稳定重号规律", blue ?? "蓝球未检出稳定位移规律"].joined(separator: "，") + "。"
+        guard red != nil || blue != nil else {
+            return "红球重号和蓝球位移均未达到启用门槛，所有组合在模型中同分，按均匀概率选号。"
+        }
+        return [red ?? "红球均匀抽取", blue ?? "蓝球均匀抽取"].joined(separator: "，")
+            + "。首注选模型评分最高的组合，并列时随机选取；追加注按模型概率抽取。"
     }
 
-    func next() -> LotterySelection {
+    func next(mode: SelectionMode = .sample) -> LotterySelection {
         var generator = SystemRandomNumberGenerator()
-        return next(using: &generator)
+        return next(mode: mode, using: &generator)
     }
 
-    func next(using generator: inout some RandomNumberGenerator) -> LotterySelection {
+    func next(mode: SelectionMode = .sample, using generator: inout some RandomNumberGenerator) -> LotterySelection {
         let numbers: [Int]
         if let offset = Self.active(reds) {
             let previous = recent[offset].redNumbers
             let others = (1...33).filter { !previous.contains($0) }
-            let overlap = sample(reds[offset], using: &generator)
+            let overlap = outcome(for: reds[offset], mode: mode, using: &generator)
             numbers = Array(previous.shuffled(using: &generator).prefix(overlap))
                 + others.shuffled(using: &generator).prefix(6 - overlap)
         } else {
@@ -119,7 +128,7 @@ struct LotteryForecast {
         }
         let blue: Int
         if let offset = Self.active(blues) {
-            let shift = sample(blues[offset], using: &generator)
+            let shift = outcome(for: blues[offset], mode: mode, using: &generator)
             blue = (recent[offset].blueNumber - 1 + shift) % 16 + 1
         } else {
             blue = Int.random(in: 1...16, using: &generator)
@@ -127,7 +136,18 @@ struct LotteryForecast {
         return LotterySelection(redNumbers: numbers.sorted(), blueNumber: blue)
     }
 
-    private func sample(_ pattern: Pattern, using generator: inout some RandomNumberGenerator) -> Int {
+    private func outcome(for pattern: Pattern, mode: SelectionMode, using generator: inout some RandomNumberGenerator) -> Int {
+        if mode == .highestScore {
+            let scores = pattern.counts.indices.map { pattern.ratio(for: $0) }
+            let best = scores.max()!
+            let tied = scores.indices.filter { scores[$0] == best }
+            var offset = Double.random(in: 0..<tied.reduce(0) { $0 + pattern.baseline[$1] }, using: &generator)
+            for index in tied {
+                if offset < pattern.baseline[index] { return index }
+                offset -= pattern.baseline[index]
+            }
+            return tied[tied.count - 1]
+        }
         var offset = Double.random(in: 0..<pattern.total, using: &generator)
         for (index, weight) in pattern.counts.enumerated() {
             if offset < weight { return index }

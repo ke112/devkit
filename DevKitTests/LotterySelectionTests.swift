@@ -59,6 +59,31 @@ struct LotterySelectionTests {
         #expect(firstScored.evaluated == 1)
         #expect(firstScored.logGain == 0)
     }
+
+    @Test func firstPickRanksExactTicketsEvenWhenZeroOverlapIsMoreFrequent() {
+        let pools = [Array(1...6), Array(7...12), Array(13...18), Array(19...24)]
+        let history = (0..<100).map { index in
+            LotteryDraw(issue: String(2026001 + index), date: "2026-01-01",
+                        redNumbers: index >= 96 ? pools[0] : pools[index % 4],
+                        blueNumber: index % 16 + 1)
+        }
+        let forecast = LotteryForecast(draws: history)
+        var generator = SeededGenerator()
+        for _ in 0..<20 {
+            let first = forecast.next(mode: .highestScore, using: &generator)
+            #expect(first.redNumbers == pools[0])
+            #expect(first.blueNumber == 5)
+        }
+    }
+
+    @Test func firstPickUsesUniformSamplerWithoutEvidence() {
+        let forecast = LotteryForecast(draws: [])
+        var firstGenerator = SeededGenerator()
+        var sampleGenerator = SeededGenerator()
+        for _ in 0..<16 {
+            #expect(forecast.next(mode: .highestScore, using: &firstGenerator) == forecast.next(using: &sampleGenerator))
+        }
+    }
 }
 
 private struct SeededGenerator: RandomNumberGenerator {

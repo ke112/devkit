@@ -77,7 +77,7 @@ struct LotteryPickerView: View {
             let updated = LotteryForecast(draws: model.draws)
             forecast = updated
             copiedIndex = nil
-            tickets = (0..<max(1, tickets.count)).map { _ in updated.next() }
+            tickets = (0..<max(1, tickets.count)).map { updated.next(mode: $0 == 0 ? .highestScore : .sample) }
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -151,7 +151,7 @@ struct LotteryPickerView: View {
                         Spacer()
                         Button {
                             withAnimation(reduceMotion ? nil : .default) {
-                                tickets[index] = forecast.next()
+                                tickets[index] = forecast.next(mode: index == 0 ? .highestScore : .sample)
                                 if copiedIndex == index { copiedIndex = nil }
                             }
                         } label: { Image(systemName: "shuffle") }
