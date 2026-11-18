@@ -133,7 +133,7 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
         case .idPhoto:
             "制作证件照"
         case .lotteryPicker:
-            "双色球随机选号"
+            "双色球选号"
         }
     }
 
@@ -158,7 +158,7 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
         case .idPhoto:
             "换底色生成证件照"
         case .lotteryPicker:
-            "随机选出 6 红球 + 1 蓝球"
+            "根据历史开奖推算参考号码"
         }
     }
 

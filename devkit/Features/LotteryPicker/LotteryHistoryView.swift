@@ -1,20 +1,13 @@
 import SwiftUI
 
 struct LotteryHistoryView: View {
-    @State private var model = LotteryHistoryModel()
-    @State private var presentation: Presentation
+    let model: LotteryHistoryModel
+    @State private var presentation = Presentation.results
     @State private var refreshID = 0
-    @State private var forecast: LotteryForecast?
-    @State private var tickets: [LotterySelection] = []
 
     enum Presentation: String, CaseIterable {
         case results = "逐期开奖"
         case trend = "号码走势"
-        case forecast = "下期推算"
-    }
-
-    init(presentation: Presentation = .results) {
-        _presentation = State(initialValue: presentation)
     }
 
     var body: some View {
@@ -38,7 +31,7 @@ struct LotteryHistoryView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 270)
+                .frame(width: 220)
             }
             .padding(24)
 
@@ -60,8 +53,6 @@ struct LotteryHistoryView: View {
                     results
                 case .trend:
                     LotteryTrendView(draws: model.draws)
-                case .forecast:
-                    forecastResults
                 }
             }
         }
@@ -79,75 +70,11 @@ struct LotteryHistoryView: View {
             }
         }
         .task(id: refreshID) { await model.load() }
-        .onChange(of: model.draws.last?.issue, initial: true) {
-            guard !model.draws.isEmpty else { return }
-            let updated = LotteryForecast(draws: model.draws)
-            forecast = updated
-            tickets = (0..<max(1, tickets.count)).map { _ in updated.next() }
-        }
     }
 
     private var historyRange: String {
         guard let first = model.draws.first, let last = model.draws.last else { return "历史开奖" }
         return "\(first.issue)～\(last.issue)"
-    }
-
-    private var forecastResults: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
-                Text("下期参考号码")
-                    .font(.headline)
-                Spacer()
-                Button {
-                    if tickets.count > 1 { tickets.removeLast() }
-                } label: {
-                    Image(systemName: "minus")
-                }
-                .accessibilityLabel("减少一注")
-                .disabled(tickets.count <= 1)
-                Text("\(tickets.count) 注").monospacedDigit()
-                Button {
-                    if let forecast { tickets.append(forecast.next()) }
-                } label: {
-                    Image(systemName: "plus")
-                }
-                .accessibilityLabel("增加一注")
-                .disabled(forecast == nil)
-            }
-            if let forecast {
-                Text(forecast.summary).font(.callout)
-                Text("推算使用全部 \(model.draws.count) 期历史数据 · 预热 \(model.draws.count - forecast.evaluated) 期 · 逐期回测 \(forecast.evaluated) 期")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if forecast.evaluated > 0 {
-                    Text("相对均匀随机的平均对数得分差 \(String(format: "%+.4f", forecast.logGain / Double(forecast.evaluated)))（正值更好）")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Divider()
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(tickets.indices, id: \.self) { index in
-                        HStack(spacing: 16) {
-                            Text("第 \(index + 1) 注").monospacedDigit()
-                            Spacer()
-                            LotteryDrawBalls(redNumbers: tickets[index].redNumbers, blueNumber: tickets[index].blueNumber)
-                            Button {
-                                if let forecast { tickets[index] = forecast.next() }
-                            } label: {
-                                Image(systemName: "shuffle")
-                            }
-                            .accessibilityLabel("重新生成第 \(index + 1) 注")
-                            .help("重新生成这一注")
-                        }
-                        .padding(.vertical, 12)
-                        Divider()
-                    }
-                }
-            }
-        }
-        .padding(24)
     }
 
     @ViewBuilder

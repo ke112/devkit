@@ -4,8 +4,13 @@ import SwiftUI
 struct LotteryPickerView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
-    @State private var selection: LotterySelection?
-    @State private var hasCopied = false
+    @State private var model = LotteryHistoryModel()
+    @State private var forecast: LotteryForecast?
+    @State private var tickets: [LotterySelection] = []
+    @State private var copiedIndex: Int?
+    @State private var refreshID = 0
+    @State private var schedule: LotteryDrawSchedule?
+    @State private var scheduleUnavailable = false
     @State private var isPrizeRulesPresented = false
 
     private let red = Color(red: 0.82, green: 0.12, blue: 0.25)
@@ -15,27 +20,46 @@ struct LotteryPickerView: View {
         ScrollView {
             VStack(spacing: 28) {
                 VStack(spacing: 10) {
-                    Text("把选择交给随机")
+                    Text("下期参考号码")
                         .font(.system(size: 30, weight: .bold, design: .rounded))
-                    Text("6 个红球，1 个蓝球，组成你的一注号码。")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.secondary)
+                    scheduleHeader
                 }
 
-                ticket
-
-                VStack(spacing: 12) {
-                    Button(action: generate) {
-                        Label(selection == nil ? "随机生成一注" : "再来一注", systemImage: "shuffle")
-                            .font(.system(size: 16, weight: .semibold))
-                            .frame(width: 216, height: 48)
-                            .contentShape(RoundedRectangle(cornerRadius: 14))
-                    }
-                    .buttonStyle(LotteryGenerateButtonStyle(color: red))
-
-                    Text("每次独立随机，号码顺序不影响结果")
-                        .font(.system(size: 12))
+                if let message = model.errorMessage {
+                    Label(message, systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.secondary)
+                }
+                if let forecast {
+                    HStack {
+                        Text("推算结果").font(.headline)
+                        Spacer()
+                        Button {
+                            if tickets.count > 1 {
+                                if copiedIndex == tickets.count - 1 { copiedIndex = nil }
+                                tickets.removeLast()
+                            }
+                        } label: { Image(systemName: "minus") }
+                        .disabled(tickets.count <= 1)
+                        .accessibilityLabel("减少一注")
+                        Text("\(tickets.count) 注").monospacedDigit()
+                        Button { tickets.append(forecast.next()) } label: { Image(systemName: "plus") }
+                            .accessibilityLabel("增加一注")
+                    }
+                    ticket(forecast: forecast)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(forecast.summary).font(.callout)
+                        Text("推算使用全部 \(model.draws.count) 期历史数据 · 预热 \(model.draws.count - forecast.evaluated) 期 · 逐期回测 \(forecast.evaluated) 期")
+                        if forecast.evaluated > 0 {
+                            Text("相对均匀随机的平均对数得分差 \(String(format: "%+.4f", forecast.logGain / Double(forecast.evaluated)))（正值更好）")
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                } else if model.isLoading {
+                    ProgressView("正在读取历史开奖…")
+                } else if model.errorMessage != nil {
+                    Button("重试") { refreshID += 1 }
                 }
 
                 rules
@@ -45,19 +69,25 @@ struct LotteryPickerView: View {
             .frame(maxWidth: .infinity)
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .navigationTitle("双色球随机选号")
+        .navigationTitle("双色球选号")
+        .task(id: refreshID) { await model.load() }
+        .task(id: refreshID) { await updateSchedule() }
+        .onChange(of: model.draws.last?.issue, initial: true) {
+            guard !model.draws.isEmpty else { return }
+            let updated = LotteryForecast(draws: model.draws)
+            forecast = updated
+            copiedIndex = nil
+            tickets = (0..<max(1, tickets.count)).map { _ in updated.next() }
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                NavigationLink {
-                    LotteryHistoryView(presentation: .forecast)
-                } label: {
-                    Label("下期推算", systemImage: "function")
-                }
-                .help("根据历史开奖生成下期参考号码")
+                Button { refreshID += 1 } label: { Label("刷新", systemImage: "arrow.clockwise") }
+                    .disabled(model.isLoading)
+                    .help("检查新增开奖期数并更新下次开奖时间")
             }
             ToolbarItem(placement: .primaryAction) {
                 NavigationLink {
-                    LotteryHistoryView()
+                    LotteryHistoryView(model: model)
                 } label: {
                     Label("历史开奖", systemImage: "chart.xyaxis.line")
                 }
@@ -77,49 +107,67 @@ struct LotteryPickerView: View {
         }
     }
 
-    private var ticket: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Label("双色球", systemImage: "circle.hexagongrid.fill")
-                    .font(.system(size: 15, weight: .semibold))
-                Spacer()
-                Text(selection == nil ? "等待选号" : "本次号码")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.bottom, 30)
+    private var scheduleHeader: some View {
+        Label {
+            Text("下次开奖 · \(schedule?.displayText ?? (scheduleUnavailable ? "暂时无法获取，可点击刷新重试" : "正在获取…"))")
+        } icon: {
+            Image(systemName: "calendar.badge.clock")
+        }
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
+    }
 
-            HStack(alignment: .top, spacing: 18) {
-                VStack(spacing: 14) {
+    private func updateSchedule() async {
+        while !Task.isCancelled {
+            scheduleUnavailable = false
+            if let schedule, schedule.date <= Date() { self.schedule = nil }
+            do {
+                let updated = try await LotteryDrawScheduleService.fetch()
+                try Task.checkCancellation()
+                schedule = updated
+                try await Task.sleep(for: .seconds(max(0, updated.nextRefreshDate.timeIntervalSinceNow)))
+            } catch {
+                guard !Task.isCancelled else { return }
+                schedule = nil
+                scheduleUnavailable = true
+                return
+            }
+        }
+    }
+
+    private func ticket(forecast: LotteryForecast) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label("双色球", systemImage: "circle.hexagongrid.fill")
+                .font(.system(size: 15, weight: .semibold))
+            LazyVStack(spacing: 0) {
+                ForEach(tickets.indices, id: \.self) { index in
+                    let selection = tickets[index]
                     HStack(spacing: 12) {
-                        ForEach(0..<6) { index in
-                            ball(selection?.redNumbers[index], color: red)
-                        }
+                        Text("第 \(index + 1) 注")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        LotteryDrawBalls(redNumbers: selection.redNumbers, blueNumber: selection.blueNumber)
+                        Spacer()
+                        Button {
+                            withAnimation(reduceMotion ? nil : .default) {
+                                tickets[index] = forecast.next()
+                                if copiedIndex == index { copiedIndex = nil }
+                            }
+                        } label: { Image(systemName: "shuffle") }
+                        .accessibilityLabel("重新推算第 \(index + 1) 注")
+                        .help("重新推算这一注")
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            copiedIndex = NSPasteboard.general.setString(selection.formattedNumbers, forType: .string) ? index : nil
+                        } label: { Image(systemName: copiedIndex == index ? "checkmark" : "doc.on.doc") }
+                        .accessibilityLabel("复制第 \(index + 1) 注号码")
+                        .help(copiedIndex == index ? "已复制" : "复制这一注")
                     }
-                    Text("红球 · 6 个")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-
-                Text("+")
-                    .font(.system(size: 20, weight: .light))
-                    .foregroundStyle(.tertiary)
-                    .frame(height: 60)
-
-                VStack(spacing: 14) {
-                    ball(selection?.blueNumber, color: blue)
-                    Text("蓝球 · 1 个")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.secondary)
+                    .padding(.vertical, 10)
+                    if index < tickets.count - 1 { Divider() }
                 }
             }
-            .frame(maxWidth: .infinity)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(selection.map {
-                "红球 \($0.redNumbers.map(LotterySelection.formatted).joined(separator: "、"))，蓝球 \(LotterySelection.formatted($0.blueNumber))"
-            } ?? "尚未生成号码，点击随机生成一注开始选号")
-            .padding(.bottom, 30)
-
             Rectangle()
                 .fill(.clear)
                 .frame(height: 1)
@@ -130,26 +178,11 @@ struct LotteryPickerView: View {
                 .overlay(alignment: .leading) { ticketNotch.offset(x: -37) }
                 .overlay(alignment: .trailing) { ticketNotch.offset(x: 37) }
 
-            HStack(alignment: .center) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("单注金额")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                    Text("¥ 2")
-                        .font(.system(size: 24, weight: .bold, design: .rounded))
-                }
+            HStack(alignment: .firstTextBaseline) {
+                Text("每注 ¥2").foregroundStyle(.secondary)
                 Spacer()
-                Button {
-                    guard let selection else { return }
-                    NSPasteboard.general.clearContents()
-                    hasCopied = NSPasteboard.general.setString(selection.formattedNumbers, forType: .string)
-                } label: {
-                    Label(hasCopied ? "已复制" : "复制号码", systemImage: hasCopied ? "checkmark" : "doc.on.doc")
-                }
-                .buttonStyle(.borderless)
-                .disabled(selection == nil)
+                Text("合计 ¥\(tickets.count * 2)").font(.headline)
             }
-            .padding(.top, 22)
         }
         .padding(28)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 22))
@@ -165,27 +198,6 @@ struct LotteryPickerView: View {
             .fill(Color(nsColor: .windowBackgroundColor))
             .frame(width: 18, height: 18)
             .accessibilityHidden(true)
-    }
-
-    private func ball(_ number: Int?, color: Color) -> some View {
-        Text(number.map(LotterySelection.formatted) ?? "–")
-            .font(.system(size: 24, weight: .bold, design: .rounded))
-            .monospacedDigit()
-            .foregroundStyle(number == nil ? color.opacity(0.6) : .white)
-            .frame(width: 60, height: 60)
-            .background {
-                if number == nil {
-                    Circle().fill(color.opacity(0.07))
-                    Circle().strokeBorder(color.opacity(0.2), style: StrokeStyle(lineWidth: 1, dash: [3, 4]))
-                } else {
-                    Circle()
-                        .fill(.radialGradient(colors: [color.opacity(0.72), color], center: .topLeading, startRadius: 0, endRadius: 62))
-                    Circle()
-                        .strokeBorder(.white.opacity(0.22), lineWidth: 1)
-                }
-            }
-            .shadow(color: number == nil ? .clear : color.opacity(0.18), radius: 7, y: 4)
-            .contentTransition(.numericText())
     }
 
     private var rules: some View {
@@ -208,25 +220,6 @@ struct LotteryPickerView: View {
         }
     }
 
-    private func generate() {
-        withAnimation(reduceMotion ? nil : .spring(duration: 0.4, bounce: 0.15)) {
-            selection = .random()
-            hasCopied = false
-        }
-    }
-}
-
-private struct LotteryGenerateButtonStyle: ButtonStyle {
-    let color: Color
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(.white)
-            .background(color.opacity(configuration.isPressed ? 0.8 : 1), in: RoundedRectangle(cornerRadius: 14))
-            .overlay {
-                RoundedRectangle(cornerRadius: 14).strokeBorder(.white.opacity(0.15), lineWidth: 1)
-            }
-    }
 }
 
 #Preview {
