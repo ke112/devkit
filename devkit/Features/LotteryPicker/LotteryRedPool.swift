@@ -28,21 +28,33 @@ struct LotteryRedPool {
         self.groups = groups
         self.scores = scores
 
+        self.allocations = Self.allocations(groupSizes: groups.map(\.count))
+    }
+
+    static func overlapCounts(referenceSize: Int, sharedWithLatest: Int) -> [Int] {
+        let sizes = [sharedWithLatest, 6 - sharedWithLatest, referenceSize - sharedWithLatest,
+                     27 - referenceSize + sharedWithLatest]
+        return allocations(groupSizes: sizes).reduce(into: Array(repeating: 0, count: 7)) { counts, allocation in
+            counts[allocation.overlap] += allocation.combinations
+        }
+    }
+
+    private static func allocations(groupSizes: [Int]) -> [Allocation] {
         var allocations: [Allocation] = []
-        for both in 0...min(2, groups[0].count) {
-            for latestOnly in 0...min(2 - both, groups[1].count) {
-                for referenceOnly in 0...min(6 - both - latestOnly, groups[2].count) {
+        for both in 0...min(2, groupSizes[0]) {
+            for latestOnly in 0...min(2 - both, groupSizes[1]) {
+                for referenceOnly in 0...min(6 - both - latestOnly, groupSizes[2]) {
                     let neither = 6 - both - latestOnly - referenceOnly
-                    guard neither <= groups[3].count else { continue }
+                    guard neither <= groupSizes[3] else { continue }
                     let counts = [both, latestOnly, referenceOnly, neither]
-                    let combinations = zip(groups, counts).reduce(1) {
-                        $0 * Self.choose($1.0.count, $1.1)
+                    let combinations = zip(groupSizes, counts).reduce(1) {
+                        $0 * Self.choose($1.0, $1.1)
                     }
                     allocations.append(Allocation(counts: counts, combinations: combinations, overlap: both + referenceOnly))
                 }
             }
         }
-        self.allocations = allocations
+        return allocations
     }
 
     func pick(highestScore: Bool, using generator: inout some RandomNumberGenerator) -> [Int] {

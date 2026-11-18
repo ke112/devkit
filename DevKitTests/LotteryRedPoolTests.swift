@@ -3,6 +3,16 @@ import Testing
 @testable import devkit
 
 struct LotteryRedPoolTests {
+    @Test func conditionalBaselineCountsOnlyEligibleTickets() {
+        let expected = (0...2).map { choose(6, $0) * choose(27, 6 - $0) }
+        #expect(LotteryRedPool.overlapCounts(referenceSize: 6, sharedWithLatest: 6) == expected + [0, 0, 0, 0])
+        let total = expected.reduce(0, +)
+        for size in [6, 17] {
+            for shared in 0...6 {
+                #expect(LotteryRedPool.overlapCounts(referenceSize: size, sharedWithLatest: shared).reduce(0, +) == total)
+            }
+        }
+    }
     @Test func samplesValidCombinationsForDifferentReferences() {
         let latest = Array(1...6)
         for reference in [latest, Array(4...9), Array(7...12)] {

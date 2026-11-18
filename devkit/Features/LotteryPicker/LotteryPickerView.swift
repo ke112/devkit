@@ -52,7 +52,9 @@ struct LotteryPickerView: View {
                         Text("推算使用全部 \(model.draws.count) 期历史数据 · 预热 \(model.draws.count - forecast.evaluated) 期 · 逐期回测 \(forecast.evaluated) 期")
                         if forecast.evaluated > 0 {
                             Text("新号规则覆盖 \(forecast.covered)/\(forecast.evaluated) 期（\(String(format: "%.2f%%", 100 * Double(forecast.covered) / Double(forecast.evaluated)))）")
-                            Text("筛选前模型相对均匀随机的平均对数得分差 \(String(format: "%+.4f", forecast.logGain / Double(forecast.evaluated)))（正值更好）")
+                            if forecast.covered > 0 {
+                                Text("在规则覆盖的期次内，相对同规则随机选号的平均对数得分差 \(String(format: "%+.4f", forecast.logGain / Double(forecast.covered)))（正值更好）")
+                            }
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -74,7 +76,7 @@ struct LotteryPickerView: View {
         .navigationTitle("双色球选号")
         .task(id: refreshID) { await model.load() }
         .task(id: refreshID) { await updateSchedule() }
-        .onChange(of: model.draws.last?.issue, initial: true) {
+        .onChange(of: model.draws, initial: true) {
             guard !model.draws.isEmpty else { return }
             let updated = LotteryForecast(draws: model.draws)
             forecast = updated

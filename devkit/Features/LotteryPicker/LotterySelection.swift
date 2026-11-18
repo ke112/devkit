@@ -41,6 +41,16 @@ struct LotteryForecast {
     private static let blueBaseline = Array(repeating: 1.0 / 16, count: 16)
     private static let warmup = 30
     private static let maximumLag = 3
+    private static let repeatBaselines = eligibleBaselines(referenceSize: 6)
+    private static let oddBaselines = eligibleBaselines(referenceSize: oddNumbers.count)
+
+    private static func eligibleBaselines(referenceSize: Int) -> [[Double]] {
+        (0...6).map { shared in
+            let counts = LotteryRedPool.overlapCounts(referenceSize: referenceSize, sharedWithLatest: shared)
+            let total = Double(counts.reduce(0, +))
+            return counts.map { Double($0) / total }
+        }
+    }
 
     private static func combinations(_ pool: Int, choosing count: Int) -> Int {
         (0..<count).reduce(1) { result, index in result * (pool - index) / (index + 1) }
@@ -61,10 +71,19 @@ struct LotteryForecast {
             counts[outcome] / (total * baseline[outcome])
         }
 
-        mutating func observe(_ outcome: Int, score: Bool) {
-            if score { logEvidence += log(ratio(for: outcome)) }
+        @discardableResult
+        mutating func observe(_ outcome: Int, score: Bool, eligibleBaseline: [Double]? = nil) -> Double {
+            var gain = 0.0
+            if score {
+                let normalization = eligibleBaseline.map { distribution in
+                    distribution.indices.reduce(0.0) { $0 + distribution[$1] * ratio(for: $1) }
+                } ?? 1
+                gain = log(ratio(for: outcome) / normalization)
+                logEvidence += gain
+            }
             counts[outcome] += 1
             total += 1
+            return gain
         }
     }
 
@@ -89,29 +108,27 @@ struct LotteryForecast {
             let redModel = Self.active(reds)
             let blueModel = Self.active(blues)
             let scoring = index >= Self.warmup
+            let latest = recent.first
+            let eligible = scoring && latest.map { draw.redNumbers.filter($0.redNumbers.contains).count <= 2 } == true
+            if eligible { covered += 1 }
             for offset in recent.indices {
                 let previous = recent[offset]
                 let overlap = draw.redNumbers.filter(previous.redNumbers.contains).count
                 let shift = (draw.blueNumber - previous.blueNumber + 16) % 16
-                if scoring {
-                    if offset == 0 && overlap <= 2 { covered += 1 }
-                    if offset == redModel { logGain += log(reds[offset].ratio(for: overlap)) }
-                    if offset == blueModel { logGain += log(blues[offset].ratio(for: shift)) }
-                }
-                reds[offset].observe(overlap, score: scoring)
-                blues[offset].observe(shift, score: scoring)
+                let shared = recent[0].redNumbers.filter(previous.redNumbers.contains).count
+                let redGain = reds[offset].observe(overlap, score: eligible, eligibleBaseline: Self.repeatBaselines[shared])
+                let blueGain = blues[offset].observe(shift, score: scoring)
+                if offset == redModel { logGain += redGain }
+                if eligible && offset == blueModel { logGain += blueGain }
             }
             let oddCount = draw.redNumbers.filter { !$0.isMultiple(of: 2) }.count
-            if scoring && redModel == Self.maximumLag {
-                logGain += log(reds[Self.maximumLag].ratio(for: oddCount))
-            }
-            reds[Self.maximumLag].observe(oddCount, score: scoring)
-            if let latest = recent.first {
+            let previousOddCount = latest?.redNumbers.filter { !$0.isMultiple(of: 2) }.count ?? 0
+            let oddGain = reds[Self.maximumLag].observe(oddCount, score: eligible, eligibleBaseline: Self.oddBaselines[previousOddCount])
+            if redModel == Self.maximumLag { logGain += oddGain }
+            if let latest {
                 let changedHalf = (draw.blueNumber > 8) != (latest.blueNumber > 8) ? 1 : 0
-                if scoring && blueModel == Self.maximumLag {
-                    logGain += log(blues[Self.maximumLag].ratio(for: changedHalf))
-                }
-                blues[Self.maximumLag].observe(changedHalf, score: scoring)
+                let halfGain = blues[Self.maximumLag].observe(changedHalf, score: scoring)
+                if eligible && blueModel == Self.maximumLag { logGain += halfGain }
             }
             if scoring { evaluated += 1 }
             recent.insert(draw, at: 0)

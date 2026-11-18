@@ -28,7 +28,8 @@ enum LotteryHistoryError: LocalizedError {
 }
 
 enum LotteryHistoryService {
-    static let startIssue = 2025001
+    static let startIssue = 2020001
+    fileprivate static let legacyStartIssue = 2025001
     static let sourceURL = URL(string: "https://www.swlc.net.cn/lottery/ssq.html")!
     private static let loader = LotteryHistoryLoader(cache: LotteryHistoryCache(), loadPage: loadHTML)
 
@@ -46,10 +47,43 @@ enum LotteryHistoryService {
     ) async throws -> LotteryHistoryResult {
         var state = cache.readState()
         var cached = state.draws
-        let fallback = cached.last.flatMap { Int($0.issue) }.flatMap { end in
-            (try? validate(cached, start: startIssue, end: end)) == nil ? nil : cached
+        let fallback: [LotteryDraw] = cached.last.flatMap { Int($0.issue) }.flatMap { end -> [LotteryDraw]? in
+            let first = cached.first.flatMap { Int($0.issue) }
+            guard first == startIssue || first == legacyStartIssue, let first else { return nil }
+            return (try? validate(cached, start: first, end: end)) == nil ? nil : cached
         } ?? []
         do {
+            if let first = cached.first.flatMap({ Int($0.issue) }), first > startIssue {
+                var prefix = state.prefix ?? LotteryHistoryCache.Pending(
+                    lower: startIssue,
+                    upper: first - 1,
+                    draws: []
+                )
+                while let upper = prefix.upper, upper >= prefix.lower {
+                    let page = try parsePage(
+                        try await loadPage(pageURL(start: prefix.lower, end: upper)),
+                        allowEmpty: true
+                    )
+                    guard !page.isEmpty,
+                          Set(page.map(\.issue)).count == page.count,
+                          Set(page.map(\.issue)).isDisjoint(with: Set(prefix.draws.map(\.issue))),
+                          page.allSatisfy({ Int($0.issue).map { (prefix.lower...upper).contains($0) } == true }),
+                          let earliest = page.compactMap({ Int($0.issue) }).min() else {
+                        throw LotteryHistoryError.incompleteHistory
+                    }
+                    prefix.draws.append(contentsOf: page)
+                    let previous = earliest - 1
+                    prefix.upper = previous % 1000 == 0 ? previous - 1 : previous
+                    state.prefix = prefix
+                    try cache.save(state)
+                    try Task.checkCancellation()
+                }
+                cached.append(contentsOf: prefix.draws)
+                cached.sort { $0.issue < $1.issue }
+                state.draws = cached
+                state.prefix = nil
+                try cache.save(state)
+            }
             if state.pending == nil, let last = cached.last.flatMap({ Int($0.issue) }) {
                 for (lower, upper) in missingRanges(cached, last: last) {
                     let page = try await fetchMissing(lower: lower, upper: upper, loadPage: loadPage)
@@ -286,8 +320,10 @@ final class LotteryHistoryLoader {
 
     func cachedHistory() -> [LotteryDraw] {
         let draws = cache.read()
-        guard let last = draws.last.flatMap({ Int($0.issue) }),
-              (try? LotteryHistoryService.validate(draws, start: LotteryHistoryService.startIssue, end: last)) != nil else {
+        guard let first = draws.first.flatMap({ Int($0.issue) }),
+              first == LotteryHistoryService.startIssue || first == LotteryHistoryService.legacyStartIssue,
+              let last = draws.last.flatMap({ Int($0.issue) }),
+              (try? LotteryHistoryService.validate(draws, start: first, end: last)) != nil else {
             return []
         }
         return draws
@@ -322,6 +358,7 @@ final class LotteryHistoryCache {
         var lottery: String = "ssq"
         var draws: [LotteryDraw]
         var pending: Pending? = nil
+        var prefix: Pending? = nil
     }
 
     private let url: URL
@@ -346,6 +383,29 @@ final class LotteryHistoryCache {
         }
         var state = contents
         state.draws.sort { $0.issue < $1.issue }
+        if state.draws.isEmpty, let pending = state.pending,
+           pending.lower == LotteryHistoryService.legacyStartIssue {
+            state.pending = Pending(
+                lower: LotteryHistoryService.startIssue,
+                upper: pending.upper,
+                draws: pending.draws
+            )
+        }
+        if let prefix = state.prefix {
+            let ids = prefix.draws.map(\.issue)
+            let first = state.draws.first.flatMap { Int($0.issue) }
+            if prefix.lower != LotteryHistoryService.startIssue
+                || first == nil
+                || prefix.draws.isEmpty
+                || Set(ids).count != ids.count
+                || !LotteryHistoryService.validDraws(prefix.draws)
+                || !prefix.draws.allSatisfy({ draw in
+                    guard let issue = Int(draw.issue), let first, let upper = prefix.upper else { return false }
+                    return issue >= prefix.lower && issue < first && issue > upper
+                }) {
+                state.prefix = nil
+            }
+        }
         if let pending = state.pending {
             let ids = pending.draws.map(\.issue)
             let cached = Set(state.draws.map(\.issue))

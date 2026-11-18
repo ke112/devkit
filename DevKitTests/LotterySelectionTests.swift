@@ -53,7 +53,7 @@ struct LotterySelectionTests {
         #expect(forecast.covered == 0)
         #expect(blueHits > 120)
         #expect(forecast.evaluated == 66)
-        #expect(forecast.logGain > 0)
+        #expect(forecast.logGain == 0)
         let firstScored = LotteryForecast(draws: Array(history.prefix(31)))
         #expect(firstScored.evaluated == 1)
         #expect(firstScored.logGain == 0)

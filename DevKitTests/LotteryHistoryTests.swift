@@ -48,14 +48,14 @@ struct LotteryHistoryTests {
         var requestedUpperIssues: [Int?] = []
         let actual = try await LotteryHistoryService.refresh(cache: LotteryHistoryCache(url: cacheURL)) { url in
             let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-            #expect(items.first(where: { $0.name == "start_issue" })?.value == "2025001")
+            #expect(items.first(where: { $0.name == "start_issue" })?.value == "2020001")
             #expect(items.first(where: { $0.name == "limit" })?.value == "100")
             let upper = items.first(where: { $0.name == "end_issue" })?.value.flatMap(Int.init)
             requestedUpperIssues.append(upper)
             return Self.html(Array(expected.filter { Int($0.issue)! <= (upper ?? Int.max) }.suffix(100).reversed()))
         }
         #expect(actual.draws == expected)
-        #expect(actual.draws.count == 183)
+        #expect(actual.draws.count == 188)
         #expect(requestedUpperIssues == [nil, 2025083])
     }
 
@@ -171,7 +171,8 @@ struct LotteryHistoryTests {
     @Test func resumesPersistedPagesAcrossYearBoundaryAfterRepeatedFailures() async throws {
         let url = Self.cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let history = (1...151).map { Self.draw(year: 2025, index: $0) }
+        let history = (2020...2024).map { Self.draw(year: $0, index: 1) }
+            + (1...151).map { Self.draw(year: 2025, index: $0) }
             + (1...100).map { Self.draw(year: 2026, index: $0) }
         var firstRequests: [Int?] = []
         await #expect(throws: URLError.self) {
@@ -236,6 +237,82 @@ struct LotteryHistoryTests {
         #expect(resumed.refreshError == nil)
     }
 
+    @Test func backfillsLegacyCacheAndResumesBothKindsOfPendingPages() async throws {
+        let url = Self.cacheURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let cache = LotteryHistoryCache(url: url)
+        let legacy = Self.fullHistory.filter { Int($0.issue)! >= 2025001 }
+        let older = (2020...2024).flatMap { year in
+            (1...120).map { Self.draw(year: year, index: $0) }
+        }
+        let additions = (33...150).map { Self.draw(year: 2026, index: $0) }
+        try cache.save(.init(
+            draws: legacy,
+            pending: .init(lower: 2026033, upper: 2026050, draws: Array(additions.suffix(100)))
+        ))
+        let loader = LotteryHistoryLoader(cache: cache) { _ in throw URLError(.notConnectedToInternet) }
+        #expect(loader.cachedHistory() == legacy)
+        var firstRequests = 0
+        let failed = try await LotteryHistoryService.refresh(cache: cache) { request in
+            firstRequests += 1
+            if firstRequests > 1 { throw URLError(.notConnectedToInternet) }
+            let upper = URLComponents(url: request, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "end_issue" })?.value.flatMap(Int.init) ?? 0
+            return Self.html(Array(older.filter { Int($0.issue)! <= upper }.suffix(100).reversed()))
+        }
+        #expect(failed.draws == legacy)
+        #expect(failed.refreshError != nil)
+        #expect(cache.readState().prefix?.draws.count == 100)
+        #expect(cache.readState().pending?.draws.count == 100)
+        #expect(loader.cachedHistory() == legacy)
+
+        var requested: [(Int, Int?)] = []
+        let resumed = try await LotteryHistoryService.refresh(cache: LotteryHistoryCache(url: url)) { request in
+            let items = URLComponents(url: request, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let lower = Int(items.first(where: { $0.name == "start_issue" })?.value ?? "")!
+            let upper = items.first(where: { $0.name == "end_issue" })?.value.flatMap(Int.init)
+            requested.append((lower, upper))
+            let matching = (older + legacy + additions).filter {
+                let issue = Int($0.issue)!
+                return issue >= lower && issue <= (upper ?? Int.max)
+            }
+            return matching.isEmpty ? Self.emptyTable : Self.html(Array(matching.suffix(100).reversed()))
+        }
+        #expect(requested.first?.1 == 2024020)
+        #expect(requested.allSatisfy { lower, upper in
+            lower != 2020001 || (upper ?? Int.max) < 2025001
+        })
+        #expect(resumed.draws == older + legacy + additions)
+        #expect(resumed.refreshError == nil)
+        #expect(cache.readState().prefix == nil)
+        #expect(cache.readState().pending == nil)
+    }
+
+    @Test func resumesLegacyInitialDownloadWithoutDiscardingItsPages() async throws {
+        let url = Self.cacheURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let cache = LotteryHistoryCache(url: url)
+        try cache.save(.init(
+            draws: [],
+            pending: .init(lower: 2025001, upper: 2025083, draws: Array(Self.fullHistory.suffix(100)))
+        ))
+        var requests: [(Int, Int?)] = []
+        let result = try await LotteryHistoryService.refresh(cache: cache) { request in
+            let items = URLComponents(url: request, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let lower = Int(items.first(where: { $0.name == "start_issue" })?.value ?? "")!
+            let upper = items.first(where: { $0.name == "end_issue" })?.value.flatMap(Int.init)
+            requests.append((lower, upper))
+            let matches = Self.fullHistory.filter {
+                let issue = Int($0.issue)!
+                return issue >= lower && issue <= (upper ?? Int.max)
+            }
+            return matches.isEmpty ? Self.emptyTable : Self.html(Array(matches.suffix(100).reversed()))
+        }
+        #expect(requests.first?.0 == 2020001)
+        #expect(requests.first?.1 == 2025083)
+        #expect(result.draws == Self.fullHistory)
+    }
+
     @Test func concurrentRefreshesShareOneRequest() async throws {
         let url = Self.cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
@@ -275,7 +352,8 @@ struct LotteryHistoryTests {
     }
 
     private static var fullHistory: [LotteryDraw] {
-        (1...151).map { draw(year: 2025, index: $0) }
+        (2020...2024).map { draw(year: $0, index: 1) }
+            + (1...151).map { draw(year: 2025, index: $0) }
             + (1...32).map { draw(year: 2026, index: $0) }
     }
 
