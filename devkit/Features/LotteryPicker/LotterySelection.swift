@@ -31,10 +31,13 @@ struct LotteryForecast {
         case sample
     }
 
-    private static let redBaseline = (0...6).map { overlap in
-        Double(combinations(6, choosing: overlap) * combinations(27, choosing: 6 - overlap))
-            / Double(combinations(33, choosing: 6))
+    private static func overlapBaseline(poolSize: Int) -> [Double] {
+        (0...6).map { overlap in
+            Double(combinations(poolSize, choosing: overlap) * combinations(33 - poolSize, choosing: 6 - overlap))
+                / Double(combinations(33, choosing: 6))
+        }
     }
+    private static let oddNumbers = Array(stride(from: 1, through: 33, by: 2))
     private static let blueBaseline = Array(repeating: 1.0 / 16, count: 16)
     private static let warmup = 30
     private static let maximumLag = 3
@@ -65,10 +68,14 @@ struct LotteryForecast {
         }
     }
 
-    private var reds = Array(repeating: Pattern(baseline: redBaseline), count: maximumLag)
+    private var reds = Array(repeating: Pattern(baseline: overlapBaseline(poolSize: 6)), count: maximumLag)
+        + [Pattern(baseline: overlapBaseline(poolSize: oddNumbers.count))]
     private var blues = Array(repeating: Pattern(baseline: blueBaseline), count: maximumLag)
+        + [Pattern(baseline: [0.5, 0.5])]
     private var recent: [LotteryDraw] = []
+    private var redPool: LotteryRedPool?
     private(set) var evaluated = 0
+    private(set) var covered = 0
     private(set) var logGain = 0.0
 
     private static func active(_ patterns: [Pattern]) -> Int? {
@@ -87,24 +94,43 @@ struct LotteryForecast {
                 let overlap = draw.redNumbers.filter(previous.redNumbers.contains).count
                 let shift = (draw.blueNumber - previous.blueNumber + 16) % 16
                 if scoring {
+                    if offset == 0 && overlap <= 2 { covered += 1 }
                     if offset == redModel { logGain += log(reds[offset].ratio(for: overlap)) }
                     if offset == blueModel { logGain += log(blues[offset].ratio(for: shift)) }
                 }
                 reds[offset].observe(overlap, score: scoring)
                 blues[offset].observe(shift, score: scoring)
             }
+            let oddCount = draw.redNumbers.filter { !$0.isMultiple(of: 2) }.count
+            if scoring && redModel == Self.maximumLag {
+                logGain += log(reds[Self.maximumLag].ratio(for: oddCount))
+            }
+            reds[Self.maximumLag].observe(oddCount, score: scoring)
+            if let latest = recent.first {
+                let changedHalf = (draw.blueNumber > 8) != (latest.blueNumber > 8) ? 1 : 0
+                if scoring && blueModel == Self.maximumLag {
+                    logGain += log(blues[Self.maximumLag].ratio(for: changedHalf))
+                }
+                blues[Self.maximumLag].observe(changedHalf, score: scoring)
+            }
             if scoring { evaluated += 1 }
             recent.insert(draw, at: 0)
             if recent.count > Self.maximumLag { recent.removeLast() }
         }
+        if let latest = recent.first {
+            let active = Self.active(reds)
+            let reference = active.map { $0 == Self.maximumLag ? Self.oddNumbers : recent[$0].redNumbers }
+            let scores = (0...6).map { outcome in active.map { reds[$0].ratio(for: outcome) } ?? 1 }
+            redPool = LotteryRedPool(latest: latest.redNumbers, reference: reference ?? latest.redNumbers, scores: scores)
+        }
     }
 
     var summary: String {
-        let red = Self.active(reds).map { "红球参考前 \($0 + 1) 期的重号个数" }
-        let blue = Self.active(blues).map { "蓝球参考前 \($0 + 1) 期的循环位移" }
-        guard evaluated > 0 else { return "正在积累验证样本，当前按均匀概率生成。" }
+        let red = Self.active(reds).map { $0 == Self.maximumLag ? "红球参考奇偶个数" : "红球参考前 \($0 + 1) 期的重号个数" }
+        let blue = Self.active(blues).map { $0 == Self.maximumLag ? "蓝球参考与上期的大小区切换" : "蓝球参考前 \($0 + 1) 期的循环位移" }
+        guard evaluated > 0 else { return "正在积累回测样本，按选号规则均匀生成。" }
         guard red != nil || blue != nil else {
-            return "红球重号和蓝球位移均未达到启用门槛，所有组合在模型中同分，按均匀概率选号。"
+            return "红球重号、奇偶个数及蓝球位移、大小区切换均未达启用门槛，按选号规则均匀生成。"
         }
         return [red ?? "红球均匀抽取", blue ?? "蓝球均匀抽取"].joined(separator: "，")
             + "。首注选模型评分最高的组合，并列时随机选取；追加注按模型概率抽取。"
@@ -116,20 +142,17 @@ struct LotteryForecast {
     }
 
     func next(mode: SelectionMode = .sample, using generator: inout some RandomNumberGenerator) -> LotterySelection {
-        let numbers: [Int]
-        if let offset = Self.active(reds) {
-            let previous = recent[offset].redNumbers
-            let others = (1...33).filter { !previous.contains($0) }
-            let overlap = outcome(for: reds[offset], mode: mode, using: &generator)
-            numbers = Array(previous.shuffled(using: &generator).prefix(overlap))
-                + others.shuffled(using: &generator).prefix(6 - overlap)
-        } else {
-            numbers = Array((1...33).shuffled(using: &generator).prefix(6))
-        }
+        guard let redPool else { return LotterySelection.random(using: &generator) }
+        let numbers = redPool.pick(highestScore: mode == .highestScore, using: &generator)
         let blue: Int
         if let offset = Self.active(blues) {
-            let shift = outcome(for: blues[offset], mode: mode, using: &generator)
-            blue = (recent[offset].blueNumber - 1 + shift) % 16 + 1
+            let value = outcome(for: blues[offset], mode: mode, using: &generator)
+            if offset == Self.maximumLag {
+                let high = (recent[0].blueNumber > 8) != (value == 1)
+                blue = Int.random(in: high ? 9...16 : 1...8, using: &generator)
+            } else {
+                blue = (recent[offset].blueNumber - 1 + value) % 16 + 1
+            }
         } else {
             blue = Int.random(in: 1...16, using: &generator)
         }
