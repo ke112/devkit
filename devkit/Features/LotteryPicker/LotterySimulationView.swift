@@ -67,10 +67,12 @@ struct LotterySimulationView: View {
                     metric("回本率", simulation.breakEvenText)
                         .help("当期奖金达到或超过当期投入的期数占比")
                     metric("总投入", LotterySimulation.money(simulation.cost))
-                    metric("总奖金", LotterySimulation.money(simulation.payout))
-                    metric("净收益", LotterySimulation.money(simulation.net))
+                    metric("总奖金", LotterySimulation.money(simulation.payout), highlight: (simulation.payout ?? 0) > 0)
+                    metric("净收益", LotterySimulation.money(simulation.net), highlight: simulation.net != nil)
                 }
-                Text("至少中一注的期数 / 总期数：\(simulation.winningPeriods) / \(simulation.rounds.count)，已确认中奖 \(simulation.winningTickets) 注。奖金含已核验派奖。")
+                let winningCount = Text("已确认中奖 \(simulation.winningTickets) 注")
+                    .foregroundStyle(simulation.winningTickets > 0 ? Color.red : .secondary)
+                Text("至少中一注的期数 / 总期数：\(simulation.winningPeriods) / \(simulation.rounds.count)，\(winningCount)。奖金含已核验派奖。")
                     .font(.caption).foregroundStyle(.secondary)
                 if simulation.pendingCount > 0 {
                     Label("\(simulation.pendingCount) 期奖金待核对，可重新运行回测。", systemImage: "exclamationmark.triangle")
@@ -92,10 +94,13 @@ struct LotterySimulationView: View {
                                     .frame(width: 12)
                                     .accessibilityHidden(true)
                                 Text(round.id).font(.body.monospacedDigit())
-                                Text(round.ranks).foregroundStyle(.secondary)
+                                Text(round.ranks)
+                                    .foregroundStyle(round.noticeError == nil && round.summary.winnerCount > 0 ? Color.red : .secondary)
                                 Spacer()
                                 Text("奖金 \(LotterySimulation.money(round.awarded))")
+                                    .foregroundStyle((round.awarded ?? 0) > 0 ? Color.red : .primary)
                                 Text("盈亏 \(LotterySimulation.money(round.awarded.map { $0 - round.cost }))")
+                                    .foregroundStyle(round.awarded != nil ? Color.red : .secondary)
                                     .frame(minWidth: 85, alignment: .trailing)
                             }
                             .monospacedDigit()
@@ -130,10 +135,11 @@ struct LotterySimulationView: View {
         }
     }
 
-    private func metric(_ title: String, _ value: String) -> some View {
+    private func metric(_ title: String, _ value: String, highlight: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(title).font(.caption).foregroundStyle(.secondary)
             Text(value).font(.title3.weight(.semibold)).monospacedDigit()
+                .foregroundStyle(highlight ? Color.red : .primary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -157,6 +163,7 @@ struct LotterySimulationView: View {
                         Text("待核对")
                     } else if let prize = result.prize {
                         Text("\(prize.rawValue) \(LotterySimulation.money(result.amount.map { $0 + (result.promotion ?? 0) }))")
+                            .foregroundStyle(.red)
                     } else {
                         Text("未中奖")
                     }

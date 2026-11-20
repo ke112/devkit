@@ -258,13 +258,16 @@ struct LotteryPickerView: View {
                     LotteryDrawBalls(draw: draw)
                 }
                 HStack {
-                    if announcement == nil {
-                        Text("常规奖级中奖 \(summary.winnerCount) 注 · 已核算 \(money(summary.total))")
-                    } else if summary.hasPendingAmount {
-                        Text("中奖 \(summary.winnerCount) 注 · 已公布奖金 \(money(summary.total))")
-                    } else {
-                        Text("中奖 \(summary.winnerCount) 注 · 奖金合计 \(money(summary.total))")
+                    Group {
+                        if announcement == nil {
+                            Text("常规奖级中奖 \(summary.winnerCount) 注 · 已核算 \(money(summary.total))")
+                        } else if summary.hasPendingAmount {
+                            Text("中奖 \(summary.winnerCount) 注 · 已公布奖金 \(money(summary.total))")
+                        } else {
+                            Text("中奖 \(summary.winnerCount) 注 · 奖金合计 \(money(summary.total))")
+                        }
                     }
+                    .foregroundStyle(summary.winnerCount > 0 ? Color.red : .primary)
                     Spacer()
                     if announcement?.fromArchive == true {
                         Link("历史奖金档案", destination: LotteryDrawArchive.sourceURL)
@@ -275,7 +278,7 @@ struct LotteryPickerView: View {
                 .font(.callout)
                 if summary.promotions > 0 {
                     Text("含 \(money(summary.promotions)) 派奖，按 10 注同打一张 20 元票计算。")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.red)
                 }
                 if announcement?.fromArchive == true {
                     Text("按历史档案核算常规奖金，活动派奖以当期公告为准。").foregroundStyle(.secondary)
@@ -314,6 +317,7 @@ struct LotteryPickerView: View {
                     let profit = settledPayout - cost
                     Text("盈亏 \(profit > 0 ? "+" : "")\(money(profit))")
                         .fontWeight(.semibold)
+                        .foregroundStyle(.red)
                 } else {
                     Text("盈亏 \(results == nil ? "待开奖" : "待核对")")
                         .foregroundStyle(.secondary)
@@ -374,6 +378,7 @@ struct LotteryPickerView: View {
             if let prize = result.prize {
                 Text("\(prize.rawValue) · \(result.amount.map { money($0 + (result.promotion ?? 0)) } ?? "奖金待核对")")
                     .font(.callout.weight(.semibold))
+                    .foregroundStyle(.red)
             } else {
                 Text("未中奖")
                     .font(.callout)
