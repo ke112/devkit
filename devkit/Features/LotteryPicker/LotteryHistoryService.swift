@@ -34,11 +34,13 @@ enum LotteryHistoryService {
     private static let loader = LotteryHistoryLoader(cache: LotteryHistoryCache(), loadPage: loadHTML)
 
     static func fetchLatest() async throws -> LotteryHistoryResult {
-        try await loader.fetch()
+        let archive = try LotteryDrawArchive.bundled.get()
+        let live = try await loader.fetch()
+        return LotteryHistoryResult(draws: archive.joining(live.draws), refreshError: live.refreshError)
     }
 
-    static func cachedHistory() -> [LotteryDraw] {
-        loader.cachedHistory()
+    static func cachedHistory() throws -> [LotteryDraw] {
+        try LotteryDrawArchive.bundled.get().joining(loader.cachedHistory())
     }
 
     static func refresh(
@@ -203,7 +205,7 @@ enum LotteryHistoryService {
         return url
     }
 
-    fileprivate static func validate(_ ordered: [LotteryDraw], start: Int, end: Int) throws {
+    static func validate(_ ordered: [LotteryDraw], start: Int, end: Int) throws {
         guard start <= end, ordered.first?.issue == String(start), ordered.last?.issue == String(end) else {
             throw LotteryHistoryError.incompleteHistory
         }
@@ -458,7 +460,7 @@ final class LotteryHistoryModel {
             if let fetch {
                 result = LotteryHistoryResult(draws: try await fetch(), refreshError: nil)
             } else {
-                let cached = LotteryHistoryService.cachedHistory()
+                let cached = try LotteryHistoryService.cachedHistory()
                 if !cached.isEmpty { draws = cached }
                 result = try await LotteryHistoryService.fetchLatest()
             }

@@ -6,7 +6,7 @@ enum LotteryTargetIssue: Equatable {
     case outOfRange(last: String?)
     case issue(String)
 
-    static let first = String(LotteryHistoryService.startIssue + 1)
+    static let first = String(LotteryDrawArchive.firstIssue + 1)
 
     static func resolve(_ input: String, latest: LotteryDraw?, nextDrawDate: Date?) -> Self {
         let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -16,6 +16,9 @@ enum LotteryTargetIssue: Equatable {
             guard value >= first else { return .outOfRange(last: nil) }
         }
         guard let latest, let latestIssue = Int(latest.issue) else { return .waitingForHistory }
+        if latestIssue == LotteryDrawArchive.lastIssue, value.isEmpty || value > latest.issue {
+            return .waitingForHistory
+        }
         let latestYear = latestIssue / 1_000
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = LotteryDrawScheduleService.beijingTimeZone
@@ -36,12 +39,14 @@ struct LotteryBacktest {
     init?(issue: String, draws: [LotteryDraw]) {
         let history = draws.prefix { $0.issue < issue }
         let targetDraw = draws.dropFirst(history.count).first
-        guard history.first?.issue == String(LotteryHistoryService.startIssue),
+        guard history.first?.issue == String(LotteryDrawArchive.firstIssue),
               let last = history.last,
               let issueNumber = Int(issue),
               issueNumber.isMultiple(of: 1_000) == false,
               issueNumber % 1_000 == 1 || Int(last.issue) == issueNumber - 1,
               targetDraw == nil || targetDraw?.issue == issue else { return nil }
+        if issueNumber > LotteryHistoryService.startIssue,
+           !history.contains(where: { $0.issue == String(LotteryHistoryService.startIssue) }) { return nil }
 
         var generator = LotteryHistoryGenerator(issue: issue, history: history)
         portfolio = LotteryPortfolio(using: &generator)

@@ -69,12 +69,24 @@ struct LotteryPrizeAnnouncement {
     let includesGoodFortune: Bool
     let promotions: [LotteryPrize: Decimal]
     let hasOtherPromotions: Bool
+    private(set) var fromArchive = false
 
     static func sourceURL(for issue: String) -> URL {
         URL(string: "https://www.gxcaipiao.com.cn/notice/detail/ssq/\(issue).html")!
     }
 
     static func fetch(for draw: LotteryDraw) async throws -> Self {
+        do {
+            return try await fetchOfficial(for: draw)
+        } catch let error as URLError where error.code != .cannotParseResponse {
+            try Task.checkCancellation()
+            if let number = Int(draw.issue), number <= LotteryDrawArchive.lastIssue,
+               let fallback = try LotteryDrawArchive.bundled.get().regularPrizes(for: draw) { return fallback }
+            throw error
+        }
+    }
+
+    private static func fetchOfficial(for draw: LotteryDraw) async throws -> Self {
         var request = URLRequest(url: sourceURL(for: draw.issue))
         request.timeoutInterval = 20
         let (data, response) = try await URLSession.shared.data(for: request)

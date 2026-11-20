@@ -3,15 +3,15 @@ import Testing
 @testable import devkit
 
 struct LotteryBacktestTests {
-    private let first = LotteryDraw(issue: "2020001", date: "2020-01-02",
-                                    redNumbers: [1, 2, 3, 4, 5, 6], blueNumber: 7)
-    private let second = LotteryDraw(issue: "2020002", date: "2020-01-05",
-                                     redNumbers: [4, 9, 14, 15, 16, 29], blueNumber: 11)
+    private let first = LotteryDraw(issue: "2003001", date: "2003-02-23",
+                                    redNumbers: [10, 11, 12, 13, 26, 28], blueNumber: 11)
+    private let second = LotteryDraw(issue: "2003002", date: "2003-02-27",
+                                     redNumbers: [4, 9, 19, 20, 21, 26], blueNumber: 12)
 
     @Test func targetAndLaterDrawsCannotChangeTheTickets() throws {
         let changedDraw = LotteryDraw(issue: second.issue, date: second.date,
                                       redNumbers: [3, 5, 6, 11, 18, 27], blueNumber: 2)
-        let later = LotteryDraw(issue: "2020003", date: "2020-01-07",
+        let later = LotteryDraw(issue: "2003003", date: "2003-03-02",
                                 redNumbers: [1, 4, 10, 12, 23, 30], blueNumber: 8)
         let pending = try #require(LotteryBacktest(issue: second.issue, draws: [first]))
         let published = try #require(LotteryBacktest(issue: second.issue, draws: [first, second, later]))
@@ -34,16 +34,38 @@ struct LotteryBacktestTests {
     }
 
     @Test func resolvesUpcomingExplicitAndYearRolloverIssues() throws {
-        #expect(LotteryTargetIssue.resolve("", latest: second, nextDrawDate: nil) == .issue("2020003"))
-        #expect(LotteryTargetIssue.resolve(" 2020002 ", latest: second, nextDrawDate: nil) == .issue("2020002"))
-        #expect(LotteryTargetIssue.resolve("2020001", latest: second, nextDrawDate: nil) == .outOfRange(last: nil))
-        #expect(LotteryTargetIssue.resolve("2020004", latest: second, nextDrawDate: nil) == .outOfRange(last: "2020003"))
+        #expect(LotteryTargetIssue.resolve("", latest: second, nextDrawDate: nil) == .issue("2003003"))
+        #expect(LotteryTargetIssue.resolve(" 2003002 ", latest: second, nextDrawDate: nil) == .issue("2003002"))
+        #expect(LotteryTargetIssue.resolve("2003001", latest: second, nextDrawDate: nil) == .outOfRange(last: nil))
+        #expect(LotteryTargetIssue.resolve("2000001", latest: second, nextDrawDate: nil) == .outOfRange(last: nil))
+        #expect(LotteryTargetIssue.resolve("2003004", latest: second, nextDrawDate: nil) == .outOfRange(last: "2003003"))
         #expect(LotteryTargetIssue.resolve("2020000", latest: second, nextDrawDate: nil) == .invalidFormat)
         #expect(LotteryTargetIssue.resolve("", latest: nil, nextDrawDate: nil) == .waitingForHistory)
 
         let last = LotteryDraw(issue: "2026152", date: "2026-12-31", redNumbers: first.redNumbers, blueNumber: 1)
         let next = try #require(ISO8601DateFormatter().date(from: "2027-01-03T21:15:00+08:00"))
         #expect(LotteryTargetIssue.resolve("", latest: last, nextDrawDate: next) == .issue("2027001"))
+    }
+
+    @Test func bundledArchiveJoinsLiveHistoryAndKeepsItsCutoff() throws {
+        let archive = try LotteryDrawArchive.bundled.get()
+        #expect(archive.draws.first == first)
+        #expect(archive.draws.last?.issue == "2019151")
+        #expect(archive.draws.count == 2510)
+        #expect(LotteryTargetIssue.resolve("", latest: archive.draws.last, nextDrawDate: nil) == .waitingForHistory)
+        let early = try #require(LotteryBacktest(issue: second.issue, draws: archive.draws))
+        #expect(early.historyCount == 1)
+        #expect(early.draw == second)
+        let live = LotteryDraw(issue: "2020001", date: "2020-01-02", redNumbers: first.redNumbers, blueNumber: 8)
+        let boundary = try #require(LotteryBacktest(issue: live.issue, draws: archive.joining([live])))
+        #expect(boundary.historyCount == 2510)
+        #expect(boundary.draw == live)
+        let legacy = LotteryDraw(issue: "2025001", date: "2025-01-02", redNumbers: second.redNumbers, blueNumber: 7)
+        #expect(LotteryBacktest(issue: legacy.issue, draws: archive.joining([legacy])) == nil)
+        let notice = try #require(archive.regularPrizes(for: second))
+        #expect(notice.fromArchive)
+        #expect(notice.amounts[.second] == 264_332)
+        #expect(notice.amounts[.first] == nil)
     }
 
     @Test func readsAnnouncedAmountsAndRejectsMismatchedDraws() throws {
@@ -70,7 +92,7 @@ struct LotteryBacktestTests {
         let notice = try LotteryPrizeAnnouncement.parse(html, for: draw)
         let floating = LotteryTicketResult(selection: .init(redNumbers: draw.redNumbers, blueNumber: 13),
                                            draw: draw, announcement: notice)
-        let sixth = LotteryTicketResult(selection: .init(redNumbers: first.redNumbers, blueNumber: 13),
+        let sixth = LotteryTicketResult(selection: .init(redNumbers: [1, 2, 3, 4, 5, 6], blueNumber: 13),
                                         draw: draw, announcement: notice)
         let notWon = LotteryTicketResult(selection: .init(redNumbers: [1, 2, 3, 7, 10, 11], blueNumber: 1),
                                          draw: draw, announcement: notice)

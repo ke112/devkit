@@ -18,7 +18,8 @@ struct LotteryHistoryView: View {
                         .font(.system(size: 20, weight: .bold, design: .rounded))
                     HStack(spacing: 8) {
                         Text(model.draws.isEmpty ? "历史开奖号码" : "共 \(model.draws.count) 期")
-                        Link("数据来源：上海福彩", destination: LotteryHistoryService.sourceURL)
+                        Link("早期开奖档案", destination: LotteryDrawArchive.sourceURL)
+                        Link("上海福彩", destination: LotteryHistoryService.sourceURL)
                     }
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)

@@ -66,7 +66,7 @@ struct LotteryPickerView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("第 \(backtest.issue) 期 · 10 注")
                             .font(.headline)
-                        Text("选号使用 \(String(LotteryHistoryService.startIssue))～\(backtest.lastHistoryIssue) 共 \(backtest.historyCount) 期")
+                        Text("选号使用 \(String(LotteryDrawArchive.firstIssue))～\(backtest.lastHistoryIssue) 共 \(backtest.historyCount) 期")
                         Text("公平开奖、常规奖级下，至少中一注的概率为 \(backtest.portfolio.anyPrizeProbability.formatted(.percent.precision(.fractionLength(2))))。")
                     }
                     .font(.caption)
@@ -248,14 +248,20 @@ struct LotteryPickerView: View {
                         Text("中奖 \(summary.winnerCount) 注 · 奖金合计 \(money(summary.total))")
                     }
                     Spacer()
-                    Link("开奖公告", destination: LotteryPrizeAnnouncement.sourceURL(for: draw.issue))
+                    if announcement?.fromArchive == true {
+                        Link("历史奖金档案", destination: LotteryDrawArchive.sourceURL)
+                    } else {
+                        Link("开奖公告", destination: LotteryPrizeAnnouncement.sourceURL(for: draw.issue))
+                    }
                 }
                 .font(.callout)
                 if summary.promotions > 0 {
                     Text("含 \(money(summary.promotions)) 派奖，按 10 注同打一张 20 元票计算。")
                         .foregroundStyle(.secondary)
                 }
-                if announcement?.hasOtherPromotions == true {
+                if announcement?.fromArchive == true {
+                    Text("按历史档案核算常规奖金，活动派奖以当期公告为准。").foregroundStyle(.secondary)
+                } else if announcement?.hasOtherPromotions == true {
                     Text("该期其他活动派奖以开奖公告和购票条件为准。")
                         .foregroundStyle(.secondary)
                 }
