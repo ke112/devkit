@@ -39,21 +39,27 @@ struct LotteryBacktest {
     init?(issue: String, draws: [LotteryDraw]) {
         let history = draws.prefix { $0.issue < issue }
         let targetDraw = draws.dropFirst(history.count).first
-        guard history.first?.issue == String(LotteryDrawArchive.firstIssue),
-              let last = history.last,
-              let issueNumber = Int(issue),
-              issueNumber.isMultiple(of: 1_000) == false,
-              issueNumber % 1_000 == 1 || Int(last.issue) == issueNumber - 1,
-              targetDraw == nil || targetDraw?.issue == issue else { return nil }
-        if issueNumber > LotteryHistoryService.startIssue,
-           !history.contains(where: { $0.issue == String(LotteryHistoryService.startIssue) }) { return nil }
-
-        var generator = LotteryHistoryGenerator(issue: issue, history: history)
-        portfolio = LotteryPortfolio(using: &generator)
+        guard targetDraw == nil || targetDraw?.issue == issue,
+              let selected = Self.makePortfolio(issue: issue, history: history),
+              let last = history.last else { return nil }
+        portfolio = selected
         self.issue = issue
         historyCount = history.count
         lastHistoryIssue = last.issue
         draw = targetDraw
+    }
+
+    static func makePortfolio(issue: String, history: ArraySlice<LotteryDraw>, count: Int = 10) -> LotteryPortfolio? {
+        guard history.first?.issue == String(LotteryDrawArchive.firstIssue),
+              let last = history.last, last.issue < issue,
+              let issueNumber = Int(issue),
+              issueNumber.isMultiple(of: 1_000) == false,
+              issueNumber % 1_000 == 1 || Int(last.issue) == issueNumber - 1 else { return nil }
+        if issueNumber > LotteryHistoryService.startIssue,
+           !history.contains(where: { $0.issue == String(LotteryHistoryService.startIssue) }) { return nil }
+
+        var generator = LotteryHistoryGenerator(issue: issue, history: history)
+        return LotteryPortfolio(count: count, using: &generator)
     }
 }
 

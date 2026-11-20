@@ -91,11 +91,11 @@ struct LotteryBacktestTests {
         """
         let notice = try LotteryPrizeAnnouncement.parse(html, for: draw)
         let floating = LotteryTicketResult(selection: .init(redNumbers: draw.redNumbers, blueNumber: 13),
-                                           draw: draw, announcement: notice)
+                                           draw: draw, announcement: notice, ticketStake: 20)
         let sixth = LotteryTicketResult(selection: .init(redNumbers: [1, 2, 3, 4, 5, 6], blueNumber: 13),
-                                        draw: draw, announcement: notice)
+                                        draw: draw, announcement: notice, ticketStake: 20)
         let notWon = LotteryTicketResult(selection: .init(redNumbers: [1, 2, 3, 7, 10, 11], blueNumber: 1),
-                                         draw: draw, announcement: notice)
+                                         draw: draw, announcement: notice, ticketStake: 20)
         #expect(floating.prize == .first)
         #expect(floating.amount == 5_882_352)
         #expect(sixth.prize == .sixth)

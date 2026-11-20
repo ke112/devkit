@@ -40,12 +40,12 @@ struct LotteryTicketResult {
     let amount: Decimal?
     let promotion: Decimal?
 
-    init(selection: LotterySelection, draw: LotteryDraw, announcement: LotteryPrizeAnnouncement?) {
+    init(selection: LotterySelection, draw: LotteryDraw, announcement: LotteryPrizeAnnouncement?, ticketStake: Int) {
         redHits = Set(selection.redNumbers).intersection(draw.redNumbers).count
         blueHit = selection.blueNumber == draw.blueNumber
         prize = LotteryPrize.matching(red: redHits, blue: blueHit, goodFortune: announcement?.includesGoodFortune == true)
         amount = prize.flatMap { announcement?.amounts[$0] ?? $0.fixedAmount }
-        promotion = prize.flatMap { announcement?.promotions[$0] }
+        promotion = ticketStake >= 20 ? prize.flatMap { announcement?.promotions[$0] } : nil
     }
 }
 

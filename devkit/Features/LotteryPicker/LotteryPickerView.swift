@@ -12,10 +12,11 @@ struct LotteryPickerView: View {
     @State private var scheduleUnavailable = false
     @State private var prizeState: PrizeState?
     @State private var isPrizeRulesPresented = false
+    @State private var isSimulationPresented = false
 
     private let red = Color(red: 0.82, green: 0.12, blue: 0.25)
     private let blue = Color(red: 0.13, green: 0.34, blue: 0.79)
-    private let unitPrice = 2
+    private let unitPrice = LotterySelection.unitPrice
 
     private struct BacktestInput: Equatable {
         let target: LotteryTargetIssue
@@ -74,7 +75,10 @@ struct LotteryPickerView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     let announcement = currentAnnouncement(for: backtest.draw)
                     let results = backtest.draw.map { draw in
-                        backtest.portfolio.selections.map { LotteryTicketResult(selection: $0, draw: draw, announcement: announcement) }
+                        backtest.portfolio.selections.map {
+                            LotteryTicketResult(selection: $0, draw: draw, announcement: announcement,
+                                                ticketStake: backtest.portfolio.selections.count * unitPrice)
+                        }
                     }
                     let summary = results.map(LotteryPrizeSummary.init)
                     let settledPayout = announcement != nil && summary?.hasPendingAmount == false ? summary?.total : nil
@@ -108,6 +112,11 @@ struct LotteryPickerView: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
+                Button { isSimulationPresented = true } label: { Label("策略测试", systemImage: "testtube.2") }
+                    .disabled(model.draws.count <= LotterySimulation.periodCount || model.draws.last?.issue == String(LotteryDrawArchive.lastIssue))
+                    .help("用最近 100 期已开奖数据回测当前选号策略")
+            }
+            ToolbarItem(placement: .primaryAction) {
                 Button { refreshID += 1 } label: { Label("刷新", systemImage: "arrow.clockwise") }
                     .disabled(model.isLoading)
                     .help("检查新增开奖期数并更新下次开奖时间")
@@ -131,6 +140,9 @@ struct LotteryPickerView: View {
         }
         .sheet(isPresented: $isPrizeRulesPresented) {
             LotteryPrizeRulesView()
+        }
+        .sheet(isPresented: $isSimulationPresented) {
+            LotterySimulationView(draws: model.draws)
         }
     }
 

@@ -1,6 +1,7 @@
 import Foundation
 
 struct LotterySelection: Hashable {
+    static let unitPrice = 2
     let redNumbers: [Int]
     let blueNumber: Int
 
@@ -49,7 +50,15 @@ struct LotteryPortfolio {
         precondition(count > 0)
         let redLabels = (1...33).shuffled(using: &generator)
         redLines = Self.redLineIndices.map { line in line.map { redLabels[$0] }.sorted() }
-        for _ in 0..<count { add(using: &generator) }
+        for _ in 0..<min(count, Self.blueNumbers.count) { add(using: &generator) }
+        if count > Self.blueNumbers.count {
+            let reserved = Set(redLines)
+            var used = Set(selections)
+            while selections.count < count {
+                let next = LotterySelection.random(using: &generator)
+                if !reserved.contains(next.redNumbers), used.insert(next).inserted { selections.append(next) }
+            }
+        }
     }
 
     var anyPrizeProbability: Double {
