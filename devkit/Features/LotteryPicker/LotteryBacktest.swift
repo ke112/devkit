@@ -59,7 +59,8 @@ struct LotteryBacktest {
         draw = targetDraw
     }
 
-    static func makePortfolio(issue: String, history: ArraySlice<LotteryDraw>, count: Int = 10, strategy: Strategy = .coverage) -> Prediction? {
+    static func makePortfolio(issue: String, history: ArraySlice<LotteryDraw>, count: Int = 10,
+                              strategy: Strategy = .coverage, sampleSeed: UInt64? = nil) -> Prediction? {
         guard history.first?.issue == String(LotteryDrawArchive.firstIssue),
               let last = history.last, last.issue < issue,
               let issueNumber = Int(issue),
@@ -68,7 +69,7 @@ struct LotteryBacktest {
         if issueNumber > LotteryHistoryService.startIssue,
            !history.contains(where: { $0.issue == String(LotteryHistoryService.startIssue) }) { return nil }
 
-        var generator = LotteryHistoryGenerator(issue: issue, history: history)
+        var generator = LotteryHistoryGenerator(issue: issue, history: history, sampleSeed: sampleSeed)
         let baseline = LotteryPortfolio(count: count, using: &generator)
         let selections = strategy == .spread ? baseline.spreadRedNumbers(using: &generator) : baseline.selections
         return Prediction(selections: selections, anyPrizeProbability: baseline.anyPrizeProbability)
@@ -78,13 +79,14 @@ struct LotteryBacktest {
 private struct LotteryHistoryGenerator: RandomNumberGenerator {
     private var state: UInt64 = 14_695_981_039_346_656_037
 
-    init(issue: String, history: ArraySlice<LotteryDraw>) {
+    init(issue: String, history: ArraySlice<LotteryDraw>, sampleSeed: UInt64?) {
         mix(UInt64(issue) ?? 0)
         for draw in history {
             mix(UInt64(draw.issue) ?? 0)
             for red in draw.redNumbers { mix(UInt64(red)) }
             mix(UInt64(draw.blueNumber))
         }
+        if let sampleSeed { mix(sampleSeed) }
     }
 
     private mutating func mix(_ value: UInt64) {

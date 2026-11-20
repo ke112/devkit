@@ -14,7 +14,7 @@ struct LotterySimulationTests {
                         redNumbers: Array(1...6), blueNumber: index.isMultiple(of: 2) ? 1 : 16)
         }
         let report = try await LotterySimulation.run(draws: draws, through: "2003101", ticketsPerPeriod: count, strategy: "fixture",
-            select: { issue, history, requestedCount in
+            select: { issue, history, requestedCount, _ in
                 #expect(history.first == draws.first)
                 #expect(history.last?.issue == String(Int(issue)! - 1))
                 return (0..<requestedCount).map { offset in
@@ -34,7 +34,7 @@ struct LotterySimulationTests {
         #expect(report.net == expectedPrize - expectedCost)
     }
 
-    @Test func matchesSingleIssueStrategyAndKeepsMissingNoticeUnsettled() async throws {
+    @Test func samplesEachRunAndKeepsMissingNoticeUnsettled() async throws {
         let draws = Array(try LotteryDrawArchive.bundled.get().draws.prefix(120))
         let end = draws[110].issue
         let report = try await LotterySimulation.run(draws: draws, through: end, notice: { draw in
@@ -43,7 +43,11 @@ struct LotterySimulationTests {
         })
         let round = try #require(report.rounds.last)
         let single = try #require(LotteryBacktest(issue: end, draws: draws))
-        #expect(round.selections == single.portfolio.selections)
+        let replay = LotteryBacktest.makePortfolio(issue: end, history: draws[..<110], sampleSeed: report.sampleSeed)
+        #expect(round.selections == replay?.selections)
+        let another = try await LotterySimulation.run(draws: draws, through: end, notice: { _ in notice })
+        #expect(report.rounds.map(\.selections) != another.rounds.map(\.selections))
+        #expect(round.draw == another.rounds.last?.draw)
         #expect(round.historyCount == single.historyCount)
         #expect(report.pendingCount == 1)
         #expect(report.payout == nil)

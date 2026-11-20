@@ -42,6 +42,7 @@ struct LotterySimulation {
     }
 
     let strategy: String
+    let sampleSeed: UInt64
     let ticketsPerPeriod: Int
     let rounds: [Round]
     var ticketCount: Int { rounds.reduce(0) { $0 + $1.selections.count } }
@@ -72,6 +73,7 @@ struct LotterySimulation {
     var report: String {
         let header = [
             "双色球策略回测 · \(strategy) · \(rangeText)",
+            "本轮抽样种子 \(sampleSeed)",
             "\(rounds.count) 期 / \(ticketCount) 注，已确认中奖 \(winningPeriods) 期、\(winningTickets) 注，历史中奖率 \(hitText)",
             "总投入 \(Self.money(cost))，总奖金 \(Self.money(payout))，净收益 \(Self.money(net))，待核对 \(pendingCount) 期",
             "回本率 \(breakEvenText)（当期奖金达到或超过当期投入）",
@@ -87,8 +89,9 @@ struct LotterySimulation {
     @MainActor
     static func run(
         draws: [LotteryDraw], through issue: String, ticketsPerPeriod: Int = defaultTicketCount, strategy: String = strategyName,
-        select: @MainActor (String, ArraySlice<LotteryDraw>, Int) -> [LotterySelection]? = {
-            LotteryBacktest.makePortfolio(issue: $0, history: $1, count: $2)?.selections
+        sampleSeed: UInt64 = .random(in: .min ... .max),
+        select: @MainActor (String, ArraySlice<LotteryDraw>, Int, UInt64) -> [LotterySelection]? = {
+            LotteryBacktest.makePortfolio(issue: $0, history: $1, count: $2, sampleSeed: $3)?.selections
         },
         notice: @escaping @MainActor (LotteryDraw) async throws -> LotteryPrizeAnnouncement = LotteryPrizeAnnouncement.fetch(for:),
         progress: (Int) -> Void = { _ in }
@@ -105,7 +108,7 @@ struct LotterySimulation {
             try await withThrowingTaskGroup(of: Round.self) { group in
                 for index in batchStart...min(batchStart + batchSize - 1, end) {
                     let draw = draws[index]
-                    guard let selections = select(draw.issue, draws[..<index], ticketsPerPeriod), selections.count == ticketsPerPeriod,
+                    guard let selections = select(draw.issue, draws[..<index], ticketsPerPeriod, sampleSeed), selections.count == ticketsPerPeriod,
                           selections.allSatisfy({ selection in
                               selection.redNumbers.count == 6 && Set(selection.redNumbers).count == 6
                                   && selection.redNumbers.allSatisfy((1...33).contains) && (1...16).contains(selection.blueNumber)
@@ -137,6 +140,6 @@ struct LotterySimulation {
                 }
             }
         }
-        return Self(strategy: strategy, ticketsPerPeriod: ticketsPerPeriod, rounds: rounds.sorted { $0.id < $1.id })
+        return Self(strategy: strategy, sampleSeed: sampleSeed, ticketsPerPeriod: ticketsPerPeriod, rounds: rounds.sorted { $0.id < $1.id })
     }
 }

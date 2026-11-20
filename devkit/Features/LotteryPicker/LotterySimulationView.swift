@@ -13,6 +13,8 @@ struct LotterySimulationView: View {
     @State private var simulation: LotterySimulation?
     @State private var failure: String?
     @State private var copied = false
+    @State private var expandedIssues = Set<String>()
+    @State private var isPrizeRulesPresented = false
     @State private var notices: [String: (LotteryDraw, LotteryPrizeAnnouncement)] = [:]
 
     init(draws: [LotteryDraw], strategy: LotteryBacktest.Strategy) {
@@ -32,6 +34,7 @@ struct LotterySimulationView: View {
                 .pickerStyle(.segmented)
                 .fixedSize()
                 .onChange(of: strategy) { runID += 1 }
+                Button("中奖规则") { isPrizeRulesPresented = true }
                 Button("关闭") { dismiss() }.keyboardShortcut(.cancelAction)
             }
             HStack(spacing: 10) {
@@ -47,6 +50,7 @@ struct LotterySimulationView: View {
                     .frame(width: 64)
                     .onSubmit { runID += 1 }
                 Button("运行回测") { runID += 1 }
+                    .help("按当前策略重新抽取各期号码并核奖")
                 Spacer()
                 Button(copied ? "已复制" : "复制回测报告") {
                     guard let simulation else { return }
@@ -72,19 +76,38 @@ struct LotterySimulationView: View {
                     Label("\(simulation.pendingCount) 期奖金待核对，可重新运行回测。", systemImage: "exclamationmark.triangle")
                 }
                 List(simulation.rounds.reversed()) { round in
-                    DisclosureGroup {
-                        roundDetail(round)
-                    } label: {
-                        HStack(spacing: 12) {
-                            Text(round.id).font(.body.monospacedDigit())
-                            Text(round.ranks).foregroundStyle(.secondary)
-                            Spacer()
-                            Text("奖金 \(LotterySimulation.money(round.awarded))")
-                            Text("盈亏 \(LotterySimulation.money(round.awarded.map { $0 - round.cost }))")
-                                .frame(minWidth: 85, alignment: .trailing)
+                    let expanded = expandedIssues.contains(round.id)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Button {
+                            if expanded {
+                                expandedIssues.remove(round.id)
+                            } else {
+                                expandedIssues.insert(round.id)
+                            }
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 12)
+                                    .accessibilityHidden(true)
+                                Text(round.id).font(.body.monospacedDigit())
+                                Text(round.ranks).foregroundStyle(.secondary)
+                                Spacer()
+                                Text("奖金 \(LotterySimulation.money(round.awarded))")
+                                Text("盈亏 \(LotterySimulation.money(round.awarded.map { $0 - round.cost }))")
+                                    .frame(minWidth: 85, alignment: .trailing)
+                            }
+                            .monospacedDigit()
+                            .padding(.vertical, 5)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
                         }
-                        .monospacedDigit()
-                        .padding(.vertical, 4)
+                        .buttonStyle(.plain)
+                        .accessibilityValue(expanded ? "已展开" : "已收起")
+                        if expanded {
+                            roundDetail(round)
+                        }
                     }
                 }
                 .listStyle(.inset)
@@ -102,6 +125,9 @@ struct LotterySimulationView: View {
         .padding(24)
         .frame(width: 760, height: 550, alignment: .topLeading)
         .task(id: runID) { await run() }
+        .sheet(isPresented: $isPrizeRulesPresented) {
+            LotteryPrizeRulesView()
+        }
     }
 
     private func metric(_ title: String, _ value: String) -> some View {
@@ -147,6 +173,7 @@ struct LotterySimulationView: View {
         simulation = nil
         failure = nil
         copied = false
+        expandedIssues.removeAll()
         defer { if !Task.isCancelled { running = false } }
         let input = endIssue.trimmingCharacters(in: .whitespacesAndNewlines)
         let issue = input.isEmpty ? draws.last?.issue ?? "" : input
@@ -156,7 +183,7 @@ struct LotterySimulationView: View {
             }
             let selectionStrategy = strategy
             let finished = try await LotterySimulation.run(draws: draws, through: issue, ticketsPerPeriod: count, strategy: selectionStrategy.rawValue, select: {
-                LotteryBacktest.makePortfolio(issue: $0, history: $1, count: $2, strategy: selectionStrategy)?.selections
+                LotteryBacktest.makePortfolio(issue: $0, history: $1, count: $2, strategy: selectionStrategy, sampleSeed: $3)?.selections
             }, notice: { draw in
                 if let (cachedDraw, notice) = notices[draw.issue], cachedDraw == draw { return notice }
                 let notice = try await LotteryPrizeAnnouncement.fetch(for: draw)
