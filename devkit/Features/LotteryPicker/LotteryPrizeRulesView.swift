@@ -55,7 +55,7 @@ struct LotteryPrizeRulesView: View {
             }
 
             HStack(alignment: .center, spacing: 20) {
-                Text("一、二等奖为浮动奖金，\n以当期开奖公告为准。")
+                Text("一、二等奖为浮动奖金，\n福运奖与活动派奖以当期开奖公告为准。")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

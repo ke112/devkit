@@ -158,7 +158,7 @@ enum DevKitFeature: String, CaseIterable, Codable, Hashable, Identifiable {
         case .idPhoto:
             "换底色生成证件照"
         case .lotteryPicker:
-            "根据历史开奖推算参考号码"
+            "组合选号与历史开奖查询"
         }
     }
 

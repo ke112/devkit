@@ -2,70 +2,87 @@ import AppKit
 import SwiftUI
 
 struct LotteryPickerView: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     @State private var model = LotteryHistoryModel()
-    @State private var forecast: LotteryForecast?
-    @State private var tickets: [LotterySelection] = []
+    @State private var issueText = ""
+    @State private var backtest: LotteryBacktest?
     @State private var copiedIndex: Int?
     @State private var refreshID = 0
     @State private var schedule: LotteryDrawSchedule?
     @State private var scheduleUnavailable = false
+    @State private var prizeState: PrizeState?
     @State private var isPrizeRulesPresented = false
 
     private let red = Color(red: 0.82, green: 0.12, blue: 0.25)
     private let blue = Color(red: 0.13, green: 0.34, blue: 0.79)
+    private let unitPrice = 2
+
+    private struct BacktestInput: Equatable {
+        let target: LotteryTargetIssue
+        let draws: [LotteryDraw]
+    }
+
+    private struct PrizeRequest: Equatable {
+        let draw: LotteryDraw?
+        let refreshID: Int
+    }
+
+    private enum PrizeState {
+        case loaded(LotteryDraw, LotteryPrizeAnnouncement)
+        case unavailable(LotteryDraw)
+    }
+
+    private var input: BacktestInput {
+        BacktestInput(
+            target: LotteryTargetIssue.resolve(issueText, latest: model.draws.last, nextDrawDate: schedule?.date),
+            draws: model.draws
+        )
+    }
+
+    private var currentBacktest: LotteryBacktest? {
+        guard let backtest, case .issue(let issue) = input.target, issue == backtest.issue else { return nil }
+        return backtest
+    }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 28) {
                 VStack(spacing: 10) {
-                    Text("下期参考号码")
+                    Text("按期选号与核奖")
                         .font(.system(size: 30, weight: .bold, design: .rounded))
                     scheduleHeader
                 }
 
                 if let message = model.errorMessage {
-                    Label(message, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.secondary)
-                }
-                if let forecast {
                     HStack {
-                        Text("推算结果").font(.headline)
-                        Spacer()
-                        Button {
-                            if tickets.count > 1 {
-                                if copiedIndex == tickets.count - 1 { copiedIndex = nil }
-                                tickets.removeLast()
-                            }
-                        } label: { Image(systemName: "minus") }
-                        .disabled(tickets.count <= 1)
-                        .accessibilityLabel("减少一注")
-                        Text("\(tickets.count) 注").monospacedDigit()
-                        Button { tickets.append(forecast.next()) } label: { Image(systemName: "plus") }
-                            .accessibilityLabel("增加一注")
+                        Label(message, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.secondary)
+                        Button("重试") { refreshID += 1 }
                     }
-                    ticket(forecast: forecast)
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("每注至少 4 个红球与上期不同，各注独立生成。").font(.callout)
-                        Text(forecast.summary).font(.callout)
-                        Text("推算使用全部 \(model.draws.count) 期历史数据 · 预热 \(model.draws.count - forecast.evaluated) 期 · 逐期回测 \(forecast.evaluated) 期")
-                        if forecast.evaluated > 0 {
-                            Text("新号规则覆盖 \(forecast.covered)/\(forecast.evaluated) 期（\(String(format: "%.2f%%", 100 * Double(forecast.covered) / Double(forecast.evaluated)))）")
-                            if forecast.covered > 0 {
-                                Text("在规则覆盖的期次内，相对同规则随机选号的平均对数得分差 \(String(format: "%+.4f", forecast.logGain / Double(forecast.covered)))（正值更好）")
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                } else if model.isLoading {
-                    ProgressView("正在读取历史开奖…")
-                } else if model.errorMessage != nil {
-                    Button("重试") { refreshID += 1 }
                 }
 
+                issueField
+                if let backtest = currentBacktest {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("第 \(backtest.issue) 期 · 10 注")
+                            .font(.headline)
+                        Text("选号使用 \(String(LotteryHistoryService.startIssue))～\(backtest.lastHistoryIssue) 共 \(backtest.historyCount) 期")
+                        Text("公平开奖、常规奖级下，至少中一注的概率为 \(backtest.portfolio.anyPrizeProbability.formatted(.percent.precision(.fractionLength(2))))。")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    let announcement = currentAnnouncement(for: backtest.draw)
+                    let results = backtest.draw.map { draw in
+                        backtest.portfolio.selections.map { LotteryTicketResult(selection: $0, draw: draw, announcement: announcement) }
+                    }
+                    let summary = results.map(LotteryPrizeSummary.init)
+                    let settledPayout = announcement != nil && summary?.hasPendingAmount == false ? summary?.total : nil
+                    drawSummary(backtest: backtest, summary: summary, announcement: announcement)
+                    ticket(backtest.portfolio.selections, results: results, settledPayout: settledPayout)
+                } else {
+                    issueStatus
+                }
                 rules
             }
             .frame(maxWidth: 720)
@@ -76,12 +93,18 @@ struct LotteryPickerView: View {
         .navigationTitle("双色球选号")
         .task(id: refreshID) { await model.load() }
         .task(id: refreshID) { await updateSchedule() }
-        .onChange(of: model.draws, initial: true) {
-            guard !model.draws.isEmpty else { return }
-            let updated = LotteryForecast(draws: model.draws)
-            forecast = updated
-            copiedIndex = nil
-            tickets = (0..<max(1, tickets.count)).map { updated.next(mode: $0 == 0 ? .highestScore : .sample) }
+        .onChange(of: input, initial: true) { _, newInput in
+            let newBacktest: LotteryBacktest?
+            if case .issue(let issue) = newInput.target {
+                newBacktest = LotteryBacktest(issue: issue, draws: newInput.draws)
+            } else {
+                newBacktest = nil
+            }
+            if newBacktest?.issue != backtest?.issue { copiedIndex = nil }
+            backtest = newBacktest
+        }
+        .task(id: PrizeRequest(draw: currentBacktest?.draw, refreshID: refreshID)) {
+            await updatePrizes(for: currentBacktest?.draw)
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -111,6 +134,41 @@ struct LotteryPickerView: View {
         }
     }
 
+    private var issueField: some View {
+        HStack(spacing: 12) {
+            Text("开奖期号")
+                .font(.headline)
+            TextField("留空使用下一期", text: $issueText)
+                .accessibilityLabel("开奖期号")
+                .textFieldStyle(.roundedBorder)
+                .monospacedDigit()
+                .frame(width: 180)
+            Button("使用下一期") { issueText = "" }
+                .disabled(issueText.isEmpty)
+            Spacer(minLength: 0)
+        }
+    }
+
+    @ViewBuilder
+    private var issueStatus: some View {
+        switch input.target {
+        case .waitingForHistory:
+            if model.isLoading {
+                ProgressView("正在同步历史开奖…")
+            } else if model.errorMessage == nil {
+                Text("等待历史开奖数据。").foregroundStyle(.secondary)
+            }
+        case .invalidFormat:
+            Text("请输入 7 位有效期号，例如 2026134。").foregroundStyle(.secondary)
+        case .outOfRange(let last):
+            Text(last.map { "可查询 \(LotteryTargetIssue.first)～\($0) 期。" }
+                 ?? "最早可查询 \(LotteryTargetIssue.first) 期。")
+                .foregroundStyle(.secondary)
+        case .issue:
+            Text("未找到该期，或此前的历史开奖尚未同步完整。").foregroundStyle(.secondary)
+        }
+    }
+
     private var scheduleHeader: some View {
         Label {
             Text("下次开奖 · \(schedule?.displayText ?? (scheduleUnavailable ? "暂时无法获取，可点击刷新重试" : "正在获取…"))")
@@ -130,6 +188,7 @@ struct LotteryPickerView: View {
                 try Task.checkCancellation()
                 schedule = updated
                 try await Task.sleep(for: .seconds(max(0, updated.nextRefreshDate.timeIntervalSinceNow)))
+                try await syncDrawAfterScheduledTime()
             } catch {
                 guard !Task.isCancelled else { return }
                 schedule = nil
@@ -139,10 +198,105 @@ struct LotteryPickerView: View {
         }
     }
 
-    private func ticket(forecast: LotteryForecast) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Label("双色球", systemImage: "circle.hexagongrid.fill")
-                .font(.system(size: 15, weight: .semibold))
+    private func syncDrawAfterScheduledTime() async throws {
+        let latest = model.draws.last?.issue
+        for attempt in 0..<15 {
+            try Task.checkCancellation()
+            await model.load()
+            try Task.checkCancellation()
+            if model.draws.last?.issue != latest { return }
+            if attempt < 14 { try await Task.sleep(for: .seconds(60)) }
+        }
+    }
+
+    private func updatePrizes(for draw: LotteryDraw?) async {
+        guard !Task.isCancelled else { return }
+        prizeState = nil
+        guard let draw else { return }
+        do {
+            let announcement = try await LotteryPrizeAnnouncement.fetch(for: draw)
+            try Task.checkCancellation()
+            guard currentBacktest?.draw == draw else { return }
+            prizeState = .loaded(draw, announcement)
+        } catch {
+            guard !Task.isCancelled, currentBacktest?.draw == draw else { return }
+            prizeState = .unavailable(draw)
+        }
+    }
+
+    private func currentAnnouncement(for draw: LotteryDraw?) -> LotteryPrizeAnnouncement? {
+        guard let draw, case .loaded(let announcedDraw, let announcement) = prizeState,
+              draw == announcedDraw else { return nil }
+        return announcement
+    }
+
+    @ViewBuilder
+    private func drawSummary(backtest: LotteryBacktest, summary: LotteryPrizeSummary?, announcement: LotteryPrizeAnnouncement?) -> some View {
+        if let draw = backtest.draw, let summary {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("实际开奖 · \(draw.date)").font(.headline)
+                    Spacer(minLength: 10)
+                    LotteryDrawBalls(draw: draw)
+                }
+                HStack {
+                    if announcement == nil {
+                        Text("常规奖级中奖 \(summary.winnerCount) 注 · 已核算 \(money(summary.total))")
+                    } else if summary.hasPendingAmount {
+                        Text("中奖 \(summary.winnerCount) 注 · 已公布奖金 \(money(summary.total))")
+                    } else {
+                        Text("中奖 \(summary.winnerCount) 注 · 奖金合计 \(money(summary.total))")
+                    }
+                    Spacer()
+                    Link("开奖公告", destination: LotteryPrizeAnnouncement.sourceURL(for: draw.issue))
+                }
+                .font(.callout)
+                if summary.promotions > 0 {
+                    Text("含 \(money(summary.promotions)) 派奖，按 10 注同打一张 20 元票计算。")
+                        .foregroundStyle(.secondary)
+                }
+                if announcement?.hasOtherPromotions == true {
+                    Text("该期其他活动派奖以开奖公告和购票条件为准。")
+                        .foregroundStyle(.secondary)
+                }
+                if case .unavailable(let failedDraw) = prizeState, failedDraw == draw {
+                    Text("未能核对公告中的浮动奖及派奖。").foregroundStyle(.secondary)
+                } else if announcement == nil {
+                    Text("正在核对开奖公告…").foregroundStyle(.secondary)
+                } else if summary.hasPendingAmount {
+                    Text("其中有奖级未公布单注奖金。").foregroundStyle(.secondary)
+                }
+            }
+        } else {
+            Label("等待第 \(backtest.issue) 期开奖", systemImage: "clock")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func money(_ amount: Decimal) -> String {
+        amount.formatted(.currency(code: "CNY").precision(.fractionLength(0...2)).locale(Locale(identifier: "zh_CN")))
+    }
+
+    private func ticket(_ tickets: [LotterySelection], results: [LotteryTicketResult]?, settledPayout: Decimal?) -> some View {
+        let cost = Decimal(tickets.count * unitPrice)
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 16) {
+                Label("双色球", systemImage: "circle.hexagongrid.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                Spacer()
+                Text("总成本 \(money(cost))")
+                if let settledPayout {
+                    let profit = settledPayout - cost
+                    Text("盈亏 \(profit > 0 ? "+" : "")\(money(profit))")
+                        .fontWeight(.semibold)
+                } else {
+                    Text("盈亏 \(results == nil ? "待开奖" : "待核对")")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .font(.subheadline)
+            .monospacedDigit()
             LazyVStack(spacing: 0) {
                 ForEach(tickets.indices, id: \.self) { index in
                     let selection = tickets[index]
@@ -153,14 +307,9 @@ struct LotteryPickerView: View {
                         Spacer()
                         LotteryDrawBalls(redNumbers: selection.redNumbers, blueNumber: selection.blueNumber)
                         Spacer()
-                        Button {
-                            withAnimation(reduceMotion ? nil : .default) {
-                                tickets[index] = forecast.next(mode: index == 0 ? .highestScore : .sample)
-                                if copiedIndex == index { copiedIndex = nil }
-                            }
-                        } label: { Image(systemName: "shuffle") }
-                        .accessibilityLabel("重新推算第 \(index + 1) 注")
-                        .help("重新推算这一注")
+                        if let result = results?[index] {
+                            ticketResult(result)
+                        }
                         Button {
                             NSPasteboard.general.clearContents()
                             copiedIndex = NSPasteboard.general.setString(selection.formattedNumbers, forType: .string) ? index : nil
@@ -182,11 +331,7 @@ struct LotteryPickerView: View {
                 .overlay(alignment: .leading) { ticketNotch.offset(x: -37) }
                 .overlay(alignment: .trailing) { ticketNotch.offset(x: 37) }
 
-            HStack(alignment: .firstTextBaseline) {
-                Text("每注 ¥2").foregroundStyle(.secondary)
-                Spacer()
-                Text("合计 ¥\(tickets.count * 2)").font(.headline)
-            }
+            Text("\(tickets.count) 注 × 每注 \(money(Decimal(unitPrice)))").foregroundStyle(.secondary)
         }
         .padding(28)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 22))
@@ -195,6 +340,23 @@ struct LotteryPickerView: View {
                 .strokeBorder(.primary.opacity(0.07), lineWidth: 1)
         }
         .shadow(color: .black.opacity(colorScheme == .dark ? 0.12 : 0.04), radius: 18, y: 8)
+    }
+
+    private func ticketResult(_ result: LotteryTicketResult) -> some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            Text("\(result.redHits) 红 · \(result.blueHit ? 1 : 0) 蓝")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let prize = result.prize {
+                Text("\(prize.rawValue) · \(result.amount.map { money($0 + (result.promotion ?? 0)) } ?? "奖金待核对")")
+                    .font(.callout.weight(.semibold))
+            } else {
+                Text("未中奖")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(minWidth: 112, alignment: .trailing)
     }
 
     private var ticketNotch: some View {
