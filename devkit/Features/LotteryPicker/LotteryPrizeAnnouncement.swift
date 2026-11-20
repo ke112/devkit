@@ -77,13 +77,47 @@ struct LotteryPrizeAnnouncement {
 
     static func fetch(for draw: LotteryDraw) async throws -> Self {
         do {
-            return try await fetchOfficial(for: draw)
+            let regional = try await fetchOfficial(for: draw)
+            guard draw.issue >= "2026014", !regional.includesGoodFortune else { return regional }
+            var components = URLComponents(string: "https://www.cwl.gov.cn/cwl_admin/front/cwlkj/search/kjxx/findDrawNotice")!
+            components.queryItems = ["name": "ssq", "issueStart": draw.issue, "issueEnd": draw.issue,
+                                     "pageNo": "1", "pageSize": "1", "systemType": "PC"].sorted { $0.key < $1.key }
+                .map { URLQueryItem(name: $0.key, value: $0.value) }
+            guard let url = components.url else { throw URLError(.badURL) }
+            var request = URLRequest(url: url, timeoutInterval: 20)
+            request.setValue("https://www.cwl.gov.cn/ygkj/wqkjgg/ssq/", forHTTPHeaderField: "Referer")
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+            return try regional.checkingGoodFortune(data, for: draw)
         } catch let error as URLError where error.code != .cannotParseResponse {
             try Task.checkCancellation()
             if let number = Int(draw.issue), number <= LotteryDrawArchive.lastIssue,
                let fallback = try LotteryDrawArchive.bundled.get().regularPrizes(for: draw) { return fallback }
             throw error
         }
+    }
+
+    func checkingGoodFortune(_ data: Data, for draw: LotteryDraw) throws -> Self {
+        struct Notice: Decodable {
+            struct Entry: Decodable {
+                let code, date, red, blue, fyjMoney, fyjCount: String
+            }
+            let state: Int
+            let result: [Entry]
+        }
+        let notice = try JSONDecoder().decode(Notice.self, from: data)
+        guard notice.state == 0, notice.result.count == 1, let entry = notice.result.first,
+              entry.code == draw.issue, entry.date.prefix(10) == draw.date,
+              entry.red.components(separatedBy: ",").map({ Int($0) }) == draw.redNumbers.map(Optional.some),
+              Int(entry.blue) == draw.blueNumber else { throw URLError(.cannotParseResponse) }
+        if entry.fyjMoney.isEmpty && entry.fyjCount.isEmpty { return self }
+        guard let count = Int(entry.fyjCount), count >= 0, let amount = Int(entry.fyjMoney),
+              amount == 5 || (amount == 0 && count == 0) else { throw URLError(.cannotParseResponse) }
+        guard amount > 0 else { return self }
+        var confirmed = amounts
+        confirmed[.goodFortune] = Decimal(amount)
+        return Self(amounts: confirmed, includesGoodFortune: true, promotions: promotions,
+                    hasOtherPromotions: hasOtherPromotions, fromArchive: fromArchive)
     }
 
     private static func fetchOfficial(for draw: LotteryDraw) async throws -> Self {

@@ -109,4 +109,22 @@ struct LotteryBacktestTests {
             try LotteryPrizeAnnouncement.parse(html.replacingOccurrences(of: ">13</span>", with: ">12</span>"), for: draw)
         }
     }
+
+    @Test func restoresOmittedNationalPrizeOnlyForMatchingDraw() throws {
+        let regional = LotteryPrizeAnnouncement(amounts: [:], includesGoodFortune: false,
+                                               promotions: [.sixth: 5], hasOtherPromotions: false)
+        let draw = LotteryDraw(issue: "2026058", date: "2026-05-24", redNumbers: [1, 4, 7, 21, 29, 30], blueNumber: 1)
+        let json = #"{"state":0,"result":[{"code":"2026058","date":"2026-05-24(日)","red":"01,04,07,21,29,30","blue":"01","fyjCount":"9576886","fyjMoney":"5"}]}"#
+        let checked = try regional.checkingGoodFortune(Data(json.utf8), for: draw)
+        let selection = LotterySelection(redNumbers: [1, 2, 3, 4, 7, 8], blueNumber: 2)
+        let prize = LotteryTicketResult(selection: selection, draw: draw, announcement: checked, ticketStake: 20)
+        #expect(prize.prize == .goodFortune && prize.amount == 5)
+        #expect(checked.promotions == regional.promotions)
+        let paused = json.replacingOccurrences(of: "\"9576886\"", with: "\"\"")
+            .replacingOccurrences(of: "\"5\"", with: "\"\"")
+        #expect(try !regional.checkingGoodFortune(Data(paused.utf8), for: draw).includesGoodFortune)
+        #expect(throws: URLError.self) {
+            try regional.checkingGoodFortune(Data(json.replacingOccurrences(of: "2026058", with: "2026059").utf8), for: draw)
+        }
+    }
 }

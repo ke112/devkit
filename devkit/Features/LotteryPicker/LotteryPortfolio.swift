@@ -69,6 +69,25 @@ struct LotteryPortfolio {
         return Double(winningOutcomes) / Double(totalOutcomes)
     }
 
+    func spreadRedNumbers(using generator: inout some RandomNumberGenerator) -> [LotterySelection] {
+        guard selections.count < Self.blueNumbers.count else { return selections }
+        var reds = selections.map { Set($0.redNumbers) }
+        let priority = (1...33).shuffled(using: &generator)
+        let covered = reds.reduce(into: Set<Int>()) { $0.formUnion($1) }
+        for unused in priority where !covered.contains(unused) {
+            let occurrences = Dictionary(grouping: reds.indices.flatMap { index in
+                reds[index].map { (number: $0, index: index) }
+            }, by: \.number)
+            guard let donor = priority.max(by: { (occurrences[$0]?.count ?? 0) < (occurrences[$1]?.count ?? 0) }),
+                  let shared = occurrences[donor], shared.count >= 2 else { break }
+            for occurrence in shared.prefix(shared.count / 2) {
+                reds[occurrence.index].remove(donor)
+                reds[occurrence.index].insert(unused)
+            }
+        }
+        return selections.indices.map { LotterySelection(redNumbers: reds[$0].sorted(), blueNumber: selections[$0].blueNumber) }
+    }
+
     mutating func add() {
         var generator = SystemRandomNumberGenerator()
         add(using: &generator)

@@ -30,17 +30,27 @@ enum LotteryTargetIssue: Equatable {
 }
 
 struct LotteryBacktest {
+    enum Strategy: String, CaseIterable {
+        case coverage = "组合覆盖 v1"
+        case spread = "红球分散 v2"
+    }
+
+    struct Prediction {
+        let selections: [LotterySelection]
+        let anyPrizeProbability: Double
+    }
+
     let issue: String
     let historyCount: Int
     let lastHistoryIssue: String
-    let portfolio: LotteryPortfolio
+    let portfolio: Prediction
     let draw: LotteryDraw?
 
-    init?(issue: String, draws: [LotteryDraw]) {
+    init?(issue: String, draws: [LotteryDraw], strategy: Strategy = .coverage) {
         let history = draws.prefix { $0.issue < issue }
         let targetDraw = draws.dropFirst(history.count).first
         guard targetDraw == nil || targetDraw?.issue == issue,
-              let selected = Self.makePortfolio(issue: issue, history: history),
+              let selected = Self.makePortfolio(issue: issue, history: history, strategy: strategy),
               let last = history.last else { return nil }
         portfolio = selected
         self.issue = issue
@@ -49,7 +59,7 @@ struct LotteryBacktest {
         draw = targetDraw
     }
 
-    static func makePortfolio(issue: String, history: ArraySlice<LotteryDraw>, count: Int = 10) -> LotteryPortfolio? {
+    static func makePortfolio(issue: String, history: ArraySlice<LotteryDraw>, count: Int = 10, strategy: Strategy = .coverage) -> Prediction? {
         guard history.first?.issue == String(LotteryDrawArchive.firstIssue),
               let last = history.last, last.issue < issue,
               let issueNumber = Int(issue),
@@ -59,7 +69,9 @@ struct LotteryBacktest {
            !history.contains(where: { $0.issue == String(LotteryHistoryService.startIssue) }) { return nil }
 
         var generator = LotteryHistoryGenerator(issue: issue, history: history)
-        return LotteryPortfolio(count: count, using: &generator)
+        let baseline = LotteryPortfolio(count: count, using: &generator)
+        let selections = strategy == .spread ? baseline.spreadRedNumbers(using: &generator) : baseline.selections
+        return Prediction(selections: selections, anyPrizeProbability: baseline.anyPrizeProbability)
     }
 }
 

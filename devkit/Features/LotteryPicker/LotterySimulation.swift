@@ -55,6 +55,11 @@ struct LotterySimulation {
     var pendingCount: Int { rounds.filter { $0.awarded == nil }.count }
     var payout: Decimal? { pendingCount == 0 ? rounds.reduce(0) { $0 + $1.summary.total } : nil }
     var net: Decimal? { payout.map { $0 - cost } }
+    var breakEvenText: String {
+        guard pendingCount == 0, !rounds.isEmpty else { return "待核对" }
+        let count = rounds.filter { $0.summary.total >= $0.cost }.count
+        return (Double(count) / Double(rounds.count)).formatted(.percent.precision(.fractionLength(0...2)))
+    }
 
     var rangeText: String { "\(rounds.first?.id ?? "")～\(rounds.last?.id ?? "")" }
 
@@ -69,6 +74,7 @@ struct LotterySimulation {
             "双色球策略回测 · \(strategy) · \(rangeText)",
             "\(rounds.count) 期 / \(ticketCount) 注，已确认中奖 \(winningPeriods) 期、\(winningTickets) 注，历史中奖率 \(hitText)",
             "总投入 \(Self.money(cost))，总奖金 \(Self.money(payout))，净收益 \(Self.money(net))，待核对 \(pendingCount) 期",
+            "回本率 \(breakEvenText)（当期奖金达到或超过当期投入）",
             "每期 \(ticketsPerPeriod) 注同票，金额含已核验派奖。历史中奖率按至少中一注的期数计算。",
             "期号\t历史期数\t奖级与注数\t投入\t奖金\t净收益"
         ]

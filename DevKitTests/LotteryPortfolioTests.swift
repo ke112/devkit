@@ -57,6 +57,28 @@ struct LotteryPortfolioTests {
         #expect(seenBlues == Set(1...16))
     }
 
+    @Test func spreadingRedsUsesAllAvailableNumbersWithoutNewOverlaps() {
+        var generator = SeededGenerator()
+        for count in [1, 5, 10, 15, 16, 20] {
+            let portfolio = LotteryPortfolio(count: count, using: &generator)
+            let spread = portfolio.spreadRedNumbers(using: &generator)
+            #expect(spread.map(\.blueNumber) == portfolio.selections.map(\.blueNumber))
+            if count >= 16 {
+                #expect(spread == portfolio.selections)
+                continue
+            }
+            #expect(Set(spread.flatMap(\.redNumbers)).count == min(count * 6, 33))
+            expectDistinctCoverage(spread)
+            for index in spread.indices {
+                for other in spread.indices where other > index {
+                    let previous = Set(portfolio.selections[index].redNumbers).intersection(portfolio.selections[other].redNumbers)
+                    let current = Set(spread[index].redNumbers).intersection(spread[other].redNumbers)
+                    #expect(current.count <= previous.count)
+                }
+            }
+        }
+    }
+
     @Test func copiedNumbersKeepLeadingZerosAndSeparateTheBlueBall() {
         let selection = LotterySelection(redNumbers: [1, 9, 10, 20, 31, 33], blueNumber: 2)
         #expect(selection.formattedNumbers == "01 09 10 20 31 33 + 02")

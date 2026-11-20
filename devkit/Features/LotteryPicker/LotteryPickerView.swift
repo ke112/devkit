@@ -5,6 +5,7 @@ struct LotteryPickerView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var model = LotteryHistoryModel()
     @State private var issueText = ""
+    @State private var strategy = LotteryBacktest.Strategy.coverage
     @State private var backtest: LotteryBacktest?
     @State private var copiedIndex: Int?
     @State private var refreshID = 0
@@ -21,6 +22,7 @@ struct LotteryPickerView: View {
     private struct BacktestInput: Equatable {
         let target: LotteryTargetIssue
         let draws: [LotteryDraw]
+        let strategy: LotteryBacktest.Strategy
     }
 
     private struct PrizeRequest: Equatable {
@@ -36,7 +38,7 @@ struct LotteryPickerView: View {
     private var input: BacktestInput {
         BacktestInput(
             target: LotteryTargetIssue.resolve(issueText, latest: model.draws.last, nextDrawDate: schedule?.date),
-            draws: model.draws
+            draws: model.draws, strategy: strategy
         )
     }
 
@@ -97,14 +99,14 @@ struct LotteryPickerView: View {
         .navigationTitle("双色球选号")
         .task(id: refreshID) { await model.load() }
         .task(id: refreshID) { await updateSchedule() }
-        .onChange(of: input, initial: true) { _, newInput in
+        .onChange(of: input, initial: true) { oldInput, newInput in
             let newBacktest: LotteryBacktest?
             if case .issue(let issue) = newInput.target {
-                newBacktest = LotteryBacktest(issue: issue, draws: newInput.draws)
+                newBacktest = LotteryBacktest(issue: issue, draws: newInput.draws, strategy: newInput.strategy)
             } else {
                 newBacktest = nil
             }
-            if newBacktest?.issue != backtest?.issue { copiedIndex = nil }
+            if newBacktest?.issue != backtest?.issue || oldInput.strategy != newInput.strategy { copiedIndex = nil }
             backtest = newBacktest
         }
         .task(id: PrizeRequest(draw: currentBacktest?.draw, refreshID: refreshID)) {
@@ -142,7 +144,7 @@ struct LotteryPickerView: View {
             LotteryPrizeRulesView()
         }
         .sheet(isPresented: $isSimulationPresented) {
-            LotterySimulationView(draws: model.draws)
+            LotterySimulationView(draws: model.draws, strategy: strategy)
         }
     }
 
@@ -158,6 +160,10 @@ struct LotteryPickerView: View {
             Button("使用下一期") { issueText = "" }
                 .disabled(issueText.isEmpty)
             Spacer(minLength: 0)
+            Picker("策略", selection: $strategy) {
+                ForEach(LotteryBacktest.Strategy.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .fixedSize()
         }
     }
 

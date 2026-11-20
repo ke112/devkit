@@ -5,6 +5,7 @@ struct LotterySimulationView: View {
     let draws: [LotteryDraw]
     @Environment(\.dismiss) private var dismiss
     @State private var endIssue: String
+    @State private var strategy: LotteryBacktest.Strategy
     @State private var ticketCountText = String(LotterySimulation.defaultTicketCount)
     @State private var runID = 0
     @State private var completed = 0
@@ -14,9 +15,10 @@ struct LotterySimulationView: View {
     @State private var copied = false
     @State private var notices: [String: (LotteryDraw, LotteryPrizeAnnouncement)] = [:]
 
-    init(draws: [LotteryDraw]) {
+    init(draws: [LotteryDraw], strategy: LotteryBacktest.Strategy) {
         self.draws = draws
         _endIssue = State(initialValue: draws.last?.issue ?? "")
+        _strategy = State(initialValue: strategy)
     }
 
     var body: some View {
@@ -24,6 +26,12 @@ struct LotterySimulationView: View {
             HStack {
                 Text("最近 100 期策略回测").font(.title2.bold())
                 Spacer()
+                Picker("策略", selection: $strategy) {
+                    ForEach(LotteryBacktest.Strategy.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .fixedSize()
+                .onChange(of: strategy) { runID += 1 }
                 Button("关闭") { dismiss() }.keyboardShortcut(.cancelAction)
             }
             HStack(spacing: 10) {
@@ -52,6 +60,8 @@ struct LotterySimulationView: View {
                     .font(.subheadline).foregroundStyle(.secondary)
                 HStack(spacing: 22) {
                     metric("历史中奖率", simulation.hitText)
+                    metric("回本率", simulation.breakEvenText)
+                        .help("当期奖金达到或超过当期投入的期数占比")
                     metric("总投入", LotterySimulation.money(simulation.cost))
                     metric("总奖金", LotterySimulation.money(simulation.payout))
                     metric("净收益", LotterySimulation.money(simulation.net))
@@ -144,7 +154,10 @@ struct LotterySimulationView: View {
             guard let count = Int(ticketCountText.trimmingCharacters(in: .whitespacesAndNewlines)) else {
                 throw LotterySimulation.RunError.invalidTicketCount
             }
-            let finished = try await LotterySimulation.run(draws: draws, through: issue, ticketsPerPeriod: count, notice: { draw in
+            let selectionStrategy = strategy
+            let finished = try await LotterySimulation.run(draws: draws, through: issue, ticketsPerPeriod: count, strategy: selectionStrategy.rawValue, select: {
+                LotteryBacktest.makePortfolio(issue: $0, history: $1, count: $2, strategy: selectionStrategy)?.selections
+            }, notice: { draw in
                 if let (cachedDraw, notice) = notices[draw.issue], cachedDraw == draw { return notice }
                 let notice = try await LotteryPrizeAnnouncement.fetch(for: draw)
                 try Task.checkCancellation()
