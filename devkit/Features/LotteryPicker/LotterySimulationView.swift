@@ -128,7 +128,7 @@ struct LotterySimulationView: View {
                                 Text("奖金 \(LotterySimulation.money(round.awarded))")
                                     .foregroundStyle((round.awarded ?? 0) > 0 ? Color.red : .primary)
                                 Text("盈亏 \(LotterySimulation.money(round.awarded.map { $0 - round.cost }))")
-                                    .foregroundStyle(round.awarded != nil ? Color.red : .secondary)
+                                    .foregroundStyle((round.awarded ?? 0) > 0 ? Color.red : .secondary)
                                     .frame(minWidth: 85, alignment: .trailing)
                             }
                             .monospacedDigit()
@@ -212,11 +212,16 @@ struct LotterySimulationView: View {
                 Text("公告读取失败 · \(error)").font(.caption)
             }
             ForEach(round.selections.indices, id: \.self) { index in
+                let selection = round.selections[index]
+                let result = round.results[index]
                 HStack {
                     Text("第 \(index + 1) 注").frame(width: 48, alignment: .leading)
-                    Text(round.selections[index].formattedNumbers)
+                    if result.prize != nil {
+                        highlightedNumbers(selection, draw: round.draw)
+                    } else {
+                        Text(selection.formattedNumbers)
+                    }
                     Spacer()
-                    let result = round.results[index]
                     Text("\(result.redHits) 红 \(result.blueHit ? 1 : 0) 蓝")
                     if round.noticeError != nil {
                         Text(result.prize.map { "\($0.rawValue) · 奖金待核对" } ?? "活动奖待核对")
@@ -231,6 +236,23 @@ struct LotterySimulationView: View {
             }
         }
         .padding(.vertical, 6)
+    }
+
+    private func highlightedNumbers(_ selection: LotterySelection, draw: LotteryDraw) -> Text {
+        func ball(_ number: Int, matched: Bool) -> AttributedString {
+            var text = AttributedString(LotterySelection.formatted(number))
+            if matched { text.foregroundColor = .red }
+            return text
+        }
+
+        var numbers = AttributedString()
+        for red in selection.redNumbers {
+            numbers += ball(red, matched: draw.redNumbers.contains(red))
+            numbers += AttributedString(" ")
+        }
+        numbers += AttributedString("+ ")
+        numbers += ball(selection.blueNumber, matched: selection.blueNumber == draw.blueNumber)
+        return Text(numbers)
     }
 
     private func run() async {

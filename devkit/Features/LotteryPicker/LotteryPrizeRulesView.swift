@@ -44,6 +44,7 @@ struct LotteryPrizeRulesView: View {
                     prizeRow("四等奖", conditions: [("5", "0"), ("4", "1")], bonus: "200 元")
                     prizeRow("五等奖", conditions: [("4", "0"), ("3", "1")], bonus: "10 元")
                     prizeRow("六等奖", conditions: [("0～2", "1")], bonus: "5 元")
+                    prizeRow("福运奖", conditions: [("3", "0")], bonus: "5 元")
                 }
                 .padding(16)
                 .frame(maxWidth: .infinity)
@@ -55,7 +56,7 @@ struct LotteryPrizeRulesView: View {
             }
 
             HStack(alignment: .center, spacing: 20) {
-                Text("一、二等奖为浮动奖金，\n福运奖与活动派奖以当期开奖公告为准。")
+                Text("福运奖在奖池达到 15 亿元时开设，直至某期开奖后奖池低于 3 亿元。\n一、二等奖为浮动奖金，福运奖与活动派奖以当期开奖公告为准。")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
