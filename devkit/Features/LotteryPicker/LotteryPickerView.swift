@@ -6,10 +6,12 @@ struct LotteryPickerView: View {
     @State private var model = LotteryHistoryModel()
     @State private var issueText = ""
     @State private var strategy = LotteryBacktest.Strategy.coverage
-    @State private var backtest: LotteryBacktest?
+    @State private var recommendation: Recommendation?
+    @State private var archiveError: String?
     @State private var copiedIndex: Int?
     @State private var refreshID = 0
     @State private var schedule: LotteryDrawSchedule?
+    @State private var drawWindow: LotteryRecommendationArchive.DrawWindow?
     @State private var scheduleUnavailable = false
     @State private var prizeState: PrizeState?
     @State private var isPrizeRulesPresented = false
@@ -21,8 +23,30 @@ struct LotteryPickerView: View {
 
     private struct BacktestInput: Equatable {
         let target: LotteryTargetIssue
+        let explicitIssue: String
         let draws: [LotteryDraw]
         let strategy: LotteryBacktest.Strategy
+        let window: LotteryRecommendationArchive.DrawWindow?
+        let refreshID: Int
+
+        var issue: String? {
+            if case .issue(let issue) = target { return issue }
+            return explicitIssue.isEmpty ? nil : explicitIssue
+        }
+    }
+
+    private struct Recommendation {
+        let issue: String
+        let strategy: LotteryBacktest.Strategy
+        let selections: [LotterySelection]
+        let draw: LotteryDraw?
+        let source: String
+        let backtest: LotteryBacktest?
+    }
+
+    private struct ScheduleRequest: Equatable {
+        let latest: LotteryDraw?
+        let refreshID: Int
     }
 
     private struct PrizeRequest: Equatable {
@@ -38,13 +62,17 @@ struct LotteryPickerView: View {
     private var input: BacktestInput {
         BacktestInput(
             target: LotteryTargetIssue.resolve(issueText, latest: model.draws.last, nextDrawDate: schedule?.date),
-            draws: model.draws, strategy: strategy
+            explicitIssue: issueText.trimmingCharacters(in: .whitespacesAndNewlines),
+            draws: model.draws, strategy: strategy,
+            window: !model.isLoading && model.errorMessage == nil && drawWindow?.latest == model.draws.last ? drawWindow : nil,
+            refreshID: refreshID
         )
     }
 
-    private var currentBacktest: LotteryBacktest? {
-        guard let backtest, case .issue(let issue) = input.target, issue == backtest.issue else { return nil }
-        return backtest
+    private var currentRecommendation: Recommendation? {
+        guard let recommendation, recommendation.strategy == strategy,
+              recommendation.issue == input.issue else { return nil }
+        return recommendation
     }
 
     var body: some View {
@@ -65,27 +93,34 @@ struct LotteryPickerView: View {
                 }
 
                 issueField
-                if let backtest = currentBacktest {
+                if let archiveError {
+                    Label("推荐留档失败 · \(archiveError)", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.red)
+                }
+                if let recommendation = currentRecommendation {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("第 \(backtest.issue) 期 · 10 注")
+                        Text("第 \(recommendation.issue) 期 · \(recommendation.source) · \(recommendation.selections.count) 注")
                             .font(.headline)
-                        Text("选号使用 \(String(LotteryDrawArchive.firstIssue))～\(backtest.lastHistoryIssue) 共 \(backtest.historyCount) 期")
-                        Text("公平开奖、常规奖级下，至少中一注的概率为 \(backtest.portfolio.anyPrizeProbability.formatted(.percent.precision(.fractionLength(2))))。")
+                        if let backtest = recommendation.backtest {
+                            Text("选号使用 \(String(LotteryDrawArchive.firstIssue))～\(backtest.lastHistoryIssue) 共 \(backtest.historyCount) 期")
+                            Text("公平开奖、常规奖级下，至少中一注的概率为 \(backtest.portfolio.anyPrizeProbability.formatted(.percent.precision(.fractionLength(2))))。")
+                        }
+                        Text("公平开奖、常规奖级下，至少中一注四等奖及以上的理论概率为 \(LotteryPortfolio.highPrizeTheory(count: recommendation.selections.count, random: false))。")
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    let announcement = currentAnnouncement(for: backtest.draw)
-                    let results = backtest.draw.map { draw in
-                        backtest.portfolio.selections.map {
+                    let announcement = currentAnnouncement(for: recommendation.draw)
+                    let results = recommendation.draw.map { draw in
+                        recommendation.selections.map {
                             LotteryTicketResult(selection: $0, draw: draw, announcement: announcement,
-                                                ticketStake: backtest.portfolio.selections.count * unitPrice)
+                                                ticketStake: recommendation.selections.count * unitPrice)
                         }
                     }
-                    let summary = results.map(LotteryPrizeSummary.init)
+                    let summary = results.map { LotteryPrizeSummary(results: $0) }
                     let settledPayout = announcement != nil && summary?.hasPendingAmount == false ? summary?.total : nil
-                    drawSummary(backtest: backtest, summary: summary, announcement: announcement)
-                    ticket(backtest.portfolio.selections, results: results, settledPayout: settledPayout)
+                    drawSummary(recommendation: recommendation, summary: summary, announcement: announcement)
+                    ticket(recommendation.selections, results: results, settledPayout: settledPayout)
                 } else {
                     issueStatus
                 }
@@ -98,25 +133,20 @@ struct LotteryPickerView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .navigationTitle("双色球选号")
         .task(id: refreshID) { await model.load() }
-        .task(id: refreshID) { await updateSchedule() }
-        .onChange(of: input, initial: true) { oldInput, newInput in
-            let newBacktest: LotteryBacktest?
-            if case .issue(let issue) = newInput.target {
-                newBacktest = LotteryBacktest(issue: issue, draws: newInput.draws, strategy: newInput.strategy)
-            } else {
-                newBacktest = nil
-            }
-            if newBacktest?.issue != backtest?.issue || oldInput.strategy != newInput.strategy { copiedIndex = nil }
-            backtest = newBacktest
+        .task(id: ScheduleRequest(latest: model.draws.last, refreshID: refreshID)) {
+            await updateSchedule(latest: model.draws.last)
         }
-        .task(id: PrizeRequest(draw: currentBacktest?.draw, refreshID: refreshID)) {
-            await updatePrizes(for: currentBacktest?.draw)
+        .onChange(of: input, initial: true) { _, newInput in
+            updateRecommendation(newInput)
+        }
+        .task(id: PrizeRequest(draw: currentRecommendation?.draw, refreshID: refreshID)) {
+            await updatePrizes(for: currentRecommendation?.draw)
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button { isSimulationPresented = true } label: { Label("策略测试", systemImage: "testtube.2") }
-                    .disabled(model.draws.count <= LotterySimulation.periodCount || model.draws.last?.issue == String(LotteryDrawArchive.lastIssue))
-                    .help("用最近 100 期已开奖数据回测当前选号策略")
+                    .disabled(model.draws.count < 2)
+                    .help("用已载入的开奖历史测试当前策略；至少需要两期，可使用内置档案")
             }
             ToolbarItem(placement: .primaryAction) {
                 Button { refreshID += 1 } label: { Label("刷新", systemImage: "arrow.clockwise") }
@@ -197,19 +227,61 @@ struct LotteryPickerView: View {
         .foregroundStyle(.secondary)
     }
 
-    private func updateSchedule() async {
+    private func updateRecommendation(_ input: BacktestInput) {
+        copiedIndex = nil
+        archiveError = nil
+        recommendation = nil
+        guard let issue = input.issue else { return }
+        let backtest: LotteryBacktest?
+        if case .issue = input.target {
+            backtest = LotteryBacktest(issue: issue, draws: input.draws, strategy: input.strategy)
+        } else {
+            backtest = nil
+        }
+        var original: [LotterySelection]?
+        do {
+            original = try LotteryRecommendationArchive.load().selections(for: issue, strategy: input.strategy)
+            if original == nil, let backtest, backtest.draw == nil,
+               let window = input.window, window.latest.issue == backtest.lastHistoryIssue {
+                original = try LotteryRecommendationArchive.record(backtest.portfolio.selections, for: issue,
+                                                                   strategy: input.strategy, window: window)
+            }
+        } catch {
+            archiveError = error.localizedDescription
+        }
+        guard let selections = original ?? backtest?.portfolio.selections else { return }
+        let draw = backtest?.draw ?? input.draws.first { $0.issue == issue }
+        let source = original != nil ? "开奖前留档原票" : (draw == nil ? "推荐预览（未留档）" : "按历史重建")
+        recommendation = Recommendation(issue: issue, strategy: input.strategy, selections: selections, draw: draw,
+                                        source: source, backtest: selections == backtest?.portfolio.selections ? backtest : nil)
+    }
+
+    private func updateSchedule(latest: LotteryDraw?) async {
+        drawWindow = nil
         while !Task.isCancelled {
             scheduleUnavailable = false
             if let schedule, schedule.date <= Date() { self.schedule = nil }
             do {
-                let updated = try await LotteryDrawScheduleService.fetch()
+                var window: LotteryRecommendationArchive.DrawWindow?
+                if let latest, latest.issue != String(LotteryDrawArchive.lastIssue) {
+                    window = try await LotteryRecommendationArchive.DrawWindow.following(latest)
+                }
+                let updated: LotteryDrawSchedule
+                if let window, window.schedule.date > Date() {
+                    updated = window.schedule
+                } else {
+                    window = nil
+                    updated = try await LotteryDrawScheduleService.fetch()
+                }
                 try Task.checkCancellation()
+                drawWindow = window
                 schedule = updated
                 try await Task.sleep(for: .seconds(max(0, updated.nextRefreshDate.timeIntervalSinceNow)))
                 try await syncDrawAfterScheduledTime()
             } catch {
                 guard !Task.isCancelled else { return }
                 schedule = nil
+                drawWindow = nil
                 scheduleUnavailable = true
                 return
             }
@@ -234,10 +306,10 @@ struct LotteryPickerView: View {
         do {
             let announcement = try await LotteryPrizeAnnouncement.fetch(for: draw)
             try Task.checkCancellation()
-            guard currentBacktest?.draw == draw else { return }
+            guard currentRecommendation?.draw == draw else { return }
             prizeState = .loaded(draw, announcement)
         } catch {
-            guard !Task.isCancelled, currentBacktest?.draw == draw else { return }
+            guard !Task.isCancelled, currentRecommendation?.draw == draw else { return }
             prizeState = .unavailable(draw)
         }
     }
@@ -249,8 +321,8 @@ struct LotteryPickerView: View {
     }
 
     @ViewBuilder
-    private func drawSummary(backtest: LotteryBacktest, summary: LotteryPrizeSummary?, announcement: LotteryPrizeAnnouncement?) -> some View {
-        if let draw = backtest.draw, let summary {
+    private func drawSummary(recommendation: Recommendation, summary: LotteryPrizeSummary?, announcement: LotteryPrizeAnnouncement?) -> some View {
+        if let draw = recommendation.draw, let summary {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     Text("实际开奖 · \(draw.date)").font(.headline)
@@ -295,7 +367,7 @@ struct LotteryPickerView: View {
                 }
             }
         } else {
-            Label("等待第 \(backtest.issue) 期开奖", systemImage: "clock")
+            Label("等待第 \(recommendation.issue) 期开奖数据", systemImage: "clock")
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }

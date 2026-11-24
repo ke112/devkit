@@ -1,6 +1,6 @@
 import Foundation
 
-enum LotteryPrize: String, CaseIterable {
+nonisolated enum LotteryPrize: String, CaseIterable, Sendable {
     case first = "一等奖"
     case second = "二等奖"
     case third = "三等奖"
@@ -8,6 +8,13 @@ enum LotteryPrize: String, CaseIterable {
     case fifth = "五等奖"
     case sixth = "六等奖"
     case goodFortune = "福运奖"
+
+    var isFourthOrBetter: Bool {
+        switch self {
+        case .first, .second, .third, .fourth: true
+        case .fifth, .sixth, .goodFortune: false
+        }
+    }
 
     var fixedAmount: Decimal? {
         switch self {

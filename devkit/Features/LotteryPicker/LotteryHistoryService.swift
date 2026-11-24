@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-struct LotteryDraw: Codable, Equatable, Identifiable {
+nonisolated struct LotteryDraw: Codable, Equatable, Identifiable, Sendable {
     let issue: String
     let date: String
     let redNumbers: [Int]
@@ -205,7 +205,7 @@ enum LotteryHistoryService {
         return url
     }
 
-    static func validate(_ ordered: [LotteryDraw], start: Int, end: Int) throws {
+    nonisolated static func validate(_ ordered: [LotteryDraw], start: Int, end: Int) throws {
         guard start <= end, ordered.first?.issue == String(start), ordered.last?.issue == String(end) else {
             throw LotteryHistoryError.incompleteHistory
         }
@@ -220,7 +220,7 @@ enum LotteryHistoryService {
         guard validDraws(ordered) else { throw LotteryHistoryError.incompleteHistory }
     }
 
-    fileprivate static func validDraws(_ draws: [LotteryDraw]) -> Bool {
+    nonisolated fileprivate static func validDraws(_ draws: [LotteryDraw]) -> Bool {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(secondsFromGMT: 0)

@@ -1,6 +1,6 @@
 import Foundation
 
-struct LotterySelection: Hashable {
+nonisolated struct LotterySelection: Hashable, Codable, Sendable {
     static let unitPrice = 2
     let redNumbers: [Int]
     let blueNumber: Int
@@ -20,10 +20,19 @@ struct LotterySelection: Hashable {
     }
 }
 
-struct LotteryPortfolio {
+nonisolated struct LotteryPortfolio {
     private static let blueNumbers = 1...16
     private static let redDrawCount = 1_107_568
     private static let redDrawsWithFourOrMoreHits = 5_428
+
+    static func highPrizeTheory(count: Int, random: Bool) -> String {
+        let fiveOrSixReds = 6 * 27 + 1
+        let exactlyFourReds = redDrawsWithFourOrMoreHits - fiveOrSixReds
+        let oneTicket = Double(fiveOrSixReds * 16 + exactlyFourReds) / Double(redDrawCount * 16)
+        let probability = random ? -expm1(Double(count) * log1p(-oneTicket)) : min(1, Double(count) * oneTicket)
+        let percentage = probability.formatted(.percent.precision(.fractionLength(4)))
+        return !random && count > blueNumbers.count ? "≤ \(percentage)" : percentage
+    }
 
     private static let redLineIndices: [[Int]] = {
         let grid = 0..<5
@@ -67,6 +76,10 @@ struct LotteryPortfolio {
         let winningOutcomes = coveredBlues * Self.redDrawCount
             + (Self.blueNumbers.count - coveredBlues) * coveredBlues * Self.redDrawsWithFourOrMoreHits
         return Double(winningOutcomes) / Double(totalOutcomes)
+    }
+
+    func selections(for strategy: LotteryBacktest.Strategy, using generator: inout some RandomNumberGenerator) -> [LotterySelection] {
+        strategy == .spread ? spreadRedNumbers(using: &generator) : selections
     }
 
     func spreadRedNumbers(using generator: inout some RandomNumberGenerator) -> [LotterySelection] {

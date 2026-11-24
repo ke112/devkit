@@ -1,7 +1,7 @@
 import Foundation
 
 struct LotteryDrawArchive {
-    static let firstIssue = 2003001
+    nonisolated static let firstIssue = 2003001
     static let lastIssue = 2019151
     static let sourceURL = URL(string: "https://datachart.500.com/ssq/history/newinc/history.php?start=03001&end=19151")!
     static let bundled = Result {

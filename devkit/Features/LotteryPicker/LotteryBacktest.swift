@@ -30,7 +30,7 @@ enum LotteryTargetIssue: Equatable {
 }
 
 struct LotteryBacktest {
-    enum Strategy: String, CaseIterable {
+    nonisolated enum Strategy: String, CaseIterable, Sendable {
         case coverage = "组合覆盖 v1"
         case spread = "红球分散 v2"
     }
@@ -69,24 +69,31 @@ struct LotteryBacktest {
         if issueNumber > LotteryHistoryService.startIssue,
            !history.contains(where: { $0.issue == String(LotteryHistoryService.startIssue) }) { return nil }
 
-        var generator = LotteryHistoryGenerator(issue: issue, history: history, sampleSeed: sampleSeed)
+        var words: [UInt64] = []
+        words.reserveCapacity(history.count * 8)
+        for draw in history { LotteryHistoryGenerator.append(draw, to: &words) }
+        var generator = LotteryHistoryGenerator(issue: issue, historyWords: words, sampleSeed: sampleSeed)
         let baseline = LotteryPortfolio(count: count, using: &generator)
-        let selections = strategy == .spread ? baseline.spreadRedNumbers(using: &generator) : baseline.selections
+        let selections = baseline.selections(for: strategy, using: &generator)
         return Prediction(selections: selections, anyPrizeProbability: baseline.anyPrizeProbability)
     }
 }
 
-private struct LotteryHistoryGenerator: RandomNumberGenerator {
+nonisolated struct LotteryHistoryGenerator: RandomNumberGenerator {
     private var state: UInt64 = 14_695_981_039_346_656_037
 
-    init(issue: String, history: ArraySlice<LotteryDraw>, sampleSeed: UInt64?) {
+    init(issue: String, historyWords: [UInt64], sampleSeed: UInt64? = nil) {
         mix(UInt64(issue) ?? 0)
-        for draw in history {
-            mix(UInt64(draw.issue) ?? 0)
-            for red in draw.redNumbers { mix(UInt64(red)) }
-            mix(UInt64(draw.blueNumber))
+        historyWords.withUnsafeBufferPointer { buffer in
+            for index in buffer.indices { mix(buffer[index]) }
         }
         if let sampleSeed { mix(sampleSeed) }
+    }
+
+    static func append(_ draw: LotteryDraw, to words: inout [UInt64]) {
+        words.append(UInt64(draw.issue) ?? 0)
+        for red in draw.redNumbers { words.append(UInt64(red)) }
+        words.append(UInt64(draw.blueNumber))
     }
 
     private mutating func mix(_ value: UInt64) {

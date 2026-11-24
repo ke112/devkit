@@ -1,6 +1,6 @@
 import Foundation
 
-struct LotteryDrawSchedule: Equatable {
+nonisolated struct LotteryDrawSchedule: Equatable, Sendable {
     let date: Date
     let nextRefreshDate: Date
 
@@ -22,7 +22,7 @@ enum LotteryDrawScheduleError: LocalizedError {
 }
 
 enum LotteryDrawScheduleService {
-    static let beijingTimeZone = TimeZone(identifier: "Asia/Shanghai")!
+    nonisolated static let beijingTimeZone = TimeZone(identifier: "Asia/Shanghai")!
     static func fetch(now: Date = Date()) async throws -> LotteryDrawSchedule {
         try await fetch(now: now) { url in
             let (data, response) = try await URLSession.shared.data(from: url)

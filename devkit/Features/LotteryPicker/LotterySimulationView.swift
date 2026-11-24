@@ -2,15 +2,24 @@ import AppKit
 import SwiftUI
 
 struct LotterySimulationView: View {
+    private enum Mode: String, CaseIterable {
+        case comparison = "同预算对照"
+        case replay = "逐期复盘"
+        case sample = "随机抽样"
+    }
+
     let draws: [LotteryDraw]
     @Environment(\.dismiss) private var dismiss
     @State private var endIssue: String
     @State private var strategy: LotteryBacktest.Strategy
     @State private var ticketCountText = String(LotterySimulation.defaultTicketCount)
     @State private var runID = 0
+    @State private var mode = Mode.comparison
     @State private var completed = 0
+    @State private var total = 0
     @State private var running = true
     @State private var simulation: LotterySimulation?
+    @State private var comparison: LotteryComparison?
     @State private var failure: String?
     @State private var copied = false
     @State private var expandedIssues = Set<String>()
@@ -26,14 +35,15 @@ struct LotterySimulationView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Text("最近 100 期策略回测").font(.title2.bold())
+                Text("双色球策略回测").font(.title2.bold())
                 Spacer()
-                Picker("策略", selection: $strategy) {
-                    ForEach(LotteryBacktest.Strategy.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                Picker("回测方式", selection: $mode) {
+                    ForEach(Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
                 .fixedSize()
-                .onChange(of: strategy) { runID += 1 }
+                .onChange(of: mode) { runID += 1 }
                 Button("中奖规则") { isPrizeRulesPresented = true }
                 Button("关闭") { dismiss() }.keyboardShortcut(.cancelAction)
             }
@@ -43,27 +53,45 @@ struct LotterySimulationView: View {
                     .frame(width: 130)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { runID += 1 }
-                Text("每期注数")
-                TextField("注数", text: $ticketCountText)
-                    .accessibilityLabel("每期注数")
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 64)
-                    .onSubmit { runID += 1 }
-                Button("运行回测") { runID += 1 }
-                    .help("按当前策略重新抽取各期号码并核奖")
+                if mode == .comparison {
+                    Text("每种策略每期 10 注 · 20 元").foregroundStyle(.secondary)
+                } else {
+                    Picker("策略", selection: $strategy) {
+                        ForEach(LotteryBacktest.Strategy.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }
+                    .labelsHidden().fixedSize()
+                    .onChange(of: strategy) { runID += 1 }
+                    Text("每期注数")
+                    TextField("注数", text: $ticketCountText)
+                        .accessibilityLabel("每期注数")
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 48)
+                        .onSubmit { runID += 1 }
+                }
+                Button(mode == .sample ? "重新抽样" : "运行回测") { runID += 1 }
                 Spacer()
                 Button(copied ? "已复制" : "复制回测报告") {
-                    guard let simulation else { return }
+                    guard let report = comparison?.report ?? simulation?.report else { return }
                     NSPasteboard.general.clearContents()
-                    copied = NSPasteboard.general.setString(simulation.report, forType: .string)
+                    copied = NSPasteboard.general.setString(report, forType: .string)
                 }
-                .disabled(simulation == nil || running)
+                .disabled((simulation == nil && comparison == nil) || running)
             }
-            if let simulation {
+            if let comparison {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        comparisonTable(comparison.all, title: "全部可复盘历史")
+                        comparisonTable(comparison.recent, title: "最近 \(comparison.recent.periods) 期")
+                        Text("一至六等列为常规奖中奖注数。两种策略优先采用开奖前留存的原票，其余期按当时可用的历史重建。均匀机选每注独立抽取，同一期可复现。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else if let simulation {
                 Text("\(simulation.strategy) · \(simulation.rangeText) · 每期 \(simulation.ticketsPerPeriod) 注，共 \(simulation.ticketCount) 注")
                     .font(.subheadline).foregroundStyle(.secondary)
                 HStack(spacing: 22) {
-                    metric("历史中奖率", simulation.hitText)
+                    metric("四等奖及以上", "\(simulation.highPrizePeriods) / \(simulation.rounds.count) 期")
                     metric("回本率", simulation.breakEvenText)
                         .help("当期奖金达到或超过当期投入的期数占比")
                     metric("总投入", LotterySimulation.money(simulation.cost))
@@ -72,7 +100,7 @@ struct LotterySimulationView: View {
                 }
                 let winningCount = Text("已确认中奖 \(simulation.winningTickets) 注")
                     .foregroundStyle(simulation.winningTickets > 0 ? Color.red : .secondary)
-                Text("至少中一注的期数 / 总期数：\(simulation.winningPeriods) / \(simulation.rounds.count)，\(winningCount)。奖金含已核验派奖。")
+                Text("已确认任意奖命中率 \(simulation.hitText)，\(winningCount)。奖金含已核验派奖。")
                     .font(.caption).foregroundStyle(.secondary)
                 if simulation.pendingCount > 0 {
                     Label("\(simulation.pendingCount) 期奖金待核对，可重新运行回测。", systemImage: "exclamationmark.triangle")
@@ -120,8 +148,8 @@ struct LotterySimulationView: View {
                 ContentUnavailableView("无法完成回测", systemImage: "exclamationmark.circle", description: Text(failure))
             } else {
                 Spacer()
-                ProgressView(value: Double(completed), total: Double(LotterySimulation.periodCount)) {
-                    Text("正在选号并核奖 · \(completed) / \(LotterySimulation.periodCount) 期")
+                ProgressView(value: Double(completed), total: Double(max(1, total))) {
+                    Text("正在\(mode == .comparison ? "比较策略" : "复盘并核奖") · \(completed) / \(total) 期")
                 }
                 .padding(.horizontal, 80)
                 Spacer()
@@ -132,6 +160,37 @@ struct LotterySimulationView: View {
         .task(id: runID) { await run() }
         .sheet(isPresented: $isPrizeRulesPresented) {
             LotteryPrizeRulesView()
+        }
+    }
+
+    private func comparisonTable(_ window: LotteryComparison.Window, title: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.headline)
+            Text("\(window.firstIssue)～\(window.lastIssue) · 共 \(window.periods) 期")
+                .font(.caption).foregroundStyle(.secondary)
+            Grid(alignment: .trailing, horizontalSpacing: 14, verticalSpacing: 7) {
+                GridRow {
+                    Text("策略").gridColumnAlignment(.leading)
+                    Text("四等奖及以上")
+                    Text("理论概率")
+                    Text("原票期数")
+                    ForEach(LotteryComparison.regularPrizes, id: \.self) { Text($0.rawValue) }
+                }
+                .font(.caption).foregroundStyle(.secondary)
+                ForEach(LotteryComparison.Method.allCases, id: \.self) { method in
+                    let totals = window.totals[method, default: .init()]
+                    GridRow {
+                        Text(method.title)
+                        Text("\(totals.highPrizePeriods) / \(window.periods)").fontWeight(.semibold)
+                        Text(LotteryPortfolio.highPrizeTheory(count: LotteryComparison.ticketCount, random: method == .quickPick))
+                        Text(method == .quickPick ? "—" : String(totals.archivedPeriods))
+                        ForEach(LotteryComparison.regularPrizes, id: \.self) { prize in
+                            Text(String(totals.ticketsByPrize[prize, default: 0]))
+                        }
+                    }
+                }
+            }
+            .font(.callout).monospacedDigit()
         }
     }
 
@@ -147,7 +206,7 @@ struct LotterySimulationView: View {
     private func roundDetail(_ round: LotterySimulation.Round) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             let actual = LotterySelection(redNumbers: round.draw.redNumbers, blueNumber: round.draw.blueNumber)
-            Text("实际开奖 \(actual.formattedNumbers) · 选号使用此前 \(round.historyCount) 期")
+            Text("\(round.ticketSource) · 实际开奖 \(actual.formattedNumbers) · 选号使用此前 \(round.historyCount) 期")
                 .font(.caption).foregroundStyle(.secondary)
             if let error = round.noticeError {
                 Text("公告读取失败 · \(error)").font(.caption)
@@ -160,7 +219,7 @@ struct LotterySimulationView: View {
                     let result = round.results[index]
                     Text("\(result.redHits) 红 \(result.blueHit ? 1 : 0) 蓝")
                     if round.noticeError != nil {
-                        Text("待核对")
+                        Text(result.prize.map { "\($0.rawValue) · 奖金待核对" } ?? "活动奖待核对")
                     } else if let prize = result.prize {
                         Text("\(prize.rawValue) \(LotterySimulation.money(result.amount.map { $0 + (result.promotion ?? 0) }))")
                             .foregroundStyle(.red)
@@ -178,20 +237,31 @@ struct LotterySimulationView: View {
         running = true
         completed = 0
         simulation = nil
+        comparison = nil
         failure = nil
         copied = false
         expandedIssues.removeAll()
         defer { if !Task.isCancelled { running = false } }
         let input = endIssue.trimmingCharacters(in: .whitespacesAndNewlines)
         let issue = input.isEmpty ? draws.last?.issue ?? "" : input
+        let available = draws.firstIndex(where: { $0.issue == issue }) ?? 0
+        total = mode == .comparison ? available : min(available, LotterySimulation.periodCount)
         do {
+            if mode == .comparison {
+                let result = try await LotteryComparison.run(draws: draws, through: issue, archive: LotteryRecommendationArchive.load()) { done, _ in
+                    await MainActor.run { if !Task.isCancelled { completed = done } }
+                }
+                try Task.checkCancellation()
+                comparison = result
+                return
+            }
             guard let count = Int(ticketCountText.trimmingCharacters(in: .whitespacesAndNewlines)) else {
                 throw LotterySimulation.RunError.invalidTicketCount
             }
-            let selectionStrategy = strategy
-            let finished = try await LotterySimulation.run(draws: draws, through: issue, ticketsPerPeriod: count, strategy: selectionStrategy.rawValue, select: {
-                LotteryBacktest.makePortfolio(issue: $0, history: $1, count: $2, strategy: selectionStrategy, sampleSeed: $3)?.selections
-            }, notice: { draw in
+            let seed: UInt64? = mode == .sample ? .random(in: .min ... .max) : nil
+            let archive = mode == .replay && count == LotterySimulation.defaultTicketCount ? try LotteryRecommendationArchive.load() : nil
+            let finished = try await LotterySimulation.run(draws: draws, through: issue, ticketsPerPeriod: count, strategy: strategy,
+                                                           sampleSeed: seed, archive: archive, notice: { draw in
                 if let (cachedDraw, notice) = notices[draw.issue], cachedDraw == draw { return notice }
                 let notice = try await LotteryPrizeAnnouncement.fetch(for: draw)
                 try Task.checkCancellation()
