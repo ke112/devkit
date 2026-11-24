@@ -39,6 +39,17 @@ struct LotterySimulationTests {
         LotteryDraw(issue: String(2003000 + index), date: "2003-02-23", redNumbers: Array(1...6), blueNumber: 1)
     }
 
+    @Test func defaultPickerAndReplayUseTheNewestRegisteredStrategy() async throws {
+        let latest = try #require(LotteryBacktest.Strategy.allCases.last)
+        let issue = draws[1].issue
+        let page = try #require(LotteryBacktest(issue: issue, draws: draws))
+        let expected = try #require(LotteryBacktest.makePortfolio(issue: issue, history: draws.prefix(1), strategy: latest))
+        let replay = try await LotterySimulation.run(draws: draws, through: issue, notice: { _ in notice })
+        #expect(replay.strategy == latest.rawValue)
+        #expect(page.portfolio.selections == expected.selections)
+        #expect(replay.rounds.last?.selections == page.portfolio.selections)
+    }
+
     @Test(arguments: LotteryBacktest.Strategy.allCases)
     func replaysHomePortfolioWithOnlyOnePriorDraw(strategy: LotteryBacktest.Strategy) async throws {
         let history = Array(draws.prefix(2))

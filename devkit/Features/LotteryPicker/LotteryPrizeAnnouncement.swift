@@ -72,6 +72,8 @@ struct LotteryPrizeSummary {
 }
 
 struct LotteryPrizeAnnouncement {
+    nonisolated static let firstFortuneIssue = "2026014"
+
     let amounts: [LotteryPrize: Decimal]
     let includesGoodFortune: Bool
     let promotions: [LotteryPrize: Decimal]
@@ -85,16 +87,8 @@ struct LotteryPrizeAnnouncement {
     static func fetch(for draw: LotteryDraw) async throws -> Self {
         do {
             let regional = try await fetchOfficial(for: draw)
-            guard draw.issue >= "2026014", !regional.includesGoodFortune else { return regional }
-            var components = URLComponents(string: "https://www.cwl.gov.cn/cwl_admin/front/cwlkj/search/kjxx/findDrawNotice")!
-            components.queryItems = ["name": "ssq", "issueStart": draw.issue, "issueEnd": draw.issue,
-                                     "pageNo": "1", "pageSize": "1", "systemType": "PC"].sorted { $0.key < $1.key }
-                .map { URLQueryItem(name: $0.key, value: $0.value) }
-            guard let url = components.url else { throw URLError(.badURL) }
-            var request = URLRequest(url: url, timeoutInterval: 20)
-            request.setValue("https://www.cwl.gov.cn/ygkj/wqkjgg/ssq/", forHTTPHeaderField: "Referer")
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+            guard draw.issue >= firstFortuneIssue, !regional.includesGoodFortune else { return regional }
+            let data = try await nationalData(from: draw.issue, through: draw.issue, limit: 1)
             return try regional.checkingGoodFortune(data, for: draw)
         } catch let error as URLError where error.code != .cannotParseResponse {
             try Task.checkCancellation()
@@ -104,25 +98,107 @@ struct LotteryPrizeAnnouncement {
         }
     }
 
-    func checkingGoodFortune(_ data: Data, for draw: LotteryDraw) throws -> Self {
-        struct Notice: Decodable {
-            struct Entry: Decodable {
-                let code, date, red, blue, fyjMoney, fyjCount: String
-            }
-            let state: Int
-            let result: [Entry]
+    @concurrent
+    static func fortuneStatuses(for draws: [LotteryDraw]) async throws -> [String: Bool] {
+        try await fortuneStatuses(for: draws) { first, last, limit in
+            try await nationalData(from: first, through: last, limit: limit)
         }
-        let notice = try JSONDecoder().decode(Notice.self, from: data)
-        guard notice.state == 0, notice.result.count == 1, let entry = notice.result.first,
-              entry.code == draw.issue, entry.date.prefix(10) == draw.date,
-              entry.red.components(separatedBy: ",").map({ Int($0) }) == draw.redNumbers.map(Optional.some),
-              Int(entry.blue) == draw.blueNumber else { throw URLError(.cannotParseResponse) }
-        if entry.fyjMoney.isEmpty && entry.fyjCount.isEmpty { return self }
-        guard let count = Int(entry.fyjCount), count >= 0, let amount = Int(entry.fyjMoney),
-              amount == 5 || (amount == 0 && count == 0) else { throw URLError(.cannotParseResponse) }
-        guard amount > 0 else { return self }
+    }
+
+    @concurrent
+    static func fortuneStatuses(for draws: [LotteryDraw],
+                                load: @Sendable (String, String, Int) async throws -> Data) async throws -> [String: Bool] {
+        try Task.checkCancellation()
+        let requested = Dictionary(grouping: draws, by: \.issue).compactMapValues { copies in
+            copies.allSatisfy { $0 == copies.first } ? copies.first : nil
+        }
+        var statuses = requested.filter { $0.key < firstFortuneIssue }.mapValues { _ in false }
+        let eligible = requested.keys.filter { $0 >= firstFortuneIssue }.compactMap(Int.init).sorted()
+        let limit = 100
+        var remaining = eligible[...]
+        while let first = remaining.first {
+            try Task.checkCancellation()
+            let batch = remaining.prefix { $0 - first < limit }
+            guard let last = batch.last else { break }
+            remaining = remaining.dropFirst(batch.count)
+            do {
+                let data = try await load(String(first), String(last), limit)
+                let notice = try NationalNotice(data: data)
+                var seen = Set<String>()
+                for entry in notice.result {
+                    guard let issue = entry.code, let number = Int(issue), (first...last).contains(number),
+                          let draw = requested[issue] else { continue }
+                    statuses[issue] = seen.insert(issue).inserted ? entry.fortuneStatus(for: draw) : nil
+                }
+            } catch {
+                if error is CancellationError || (error as? URLError)?.code == .cancelled { throw error }
+            }
+        }
+        try Task.checkCancellation()
+        return statuses
+    }
+
+    private nonisolated static func nationalData(from first: String, through last: String, limit: Int) async throws -> Data {
+        var components = URLComponents(string: "https://www.cwl.gov.cn/cwl_admin/front/cwlkj/search/kjxx/findDrawNotice")!
+        components.queryItems = ["name": "ssq", "issueStart": first, "issueEnd": last,
+                                 "pageNo": "1", "pageSize": String(limit), "systemType": "PC"].sorted { $0.key < $1.key }
+            .map { URLQueryItem(name: $0.key, value: $0.value) }
+        guard let url = components.url else { throw URLError(.badURL) }
+        var request = URLRequest(url: url, timeoutInterval: 20)
+        request.setValue("https://www.cwl.gov.cn/ygkj/wqkjgg/ssq/", forHTTPHeaderField: "Referer")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+        return data
+    }
+
+    private nonisolated struct NationalNotice: Decodable {
+        nonisolated struct Entry: Decodable {
+            let code, date, red, blue, fyjMoney, fyjCount: String?
+
+            private enum Keys: String, CodingKey { case code, date, red, blue, fyjMoney, fyjCount }
+
+            init(from decoder: Decoder) throws {
+                let fields = try? decoder.container(keyedBy: Keys.self)
+                func text(_ key: Keys) -> String? {
+                    if let value = try? fields?.decode(String.self, forKey: key) { return value }
+                    return (try? fields?.decode(Int.self, forKey: key)).map(String.init)
+                }
+                code = text(.code)
+                date = text(.date)
+                red = text(.red)
+                blue = text(.blue)
+                fyjMoney = text(.fyjMoney)
+                fyjCount = text(.fyjCount)
+            }
+
+            func fortuneStatus(for draw: LotteryDraw) -> Bool? {
+                guard code == draw.issue, let date, date.prefix(10) == draw.date,
+                      let red, red.components(separatedBy: ",").map({ Int($0) }) == draw.redNumbers.map(Optional.some),
+                      let blue, Int(blue) == draw.blueNumber, let fyjMoney, let fyjCount else { return nil }
+                if fyjMoney.isEmpty && fyjCount.isEmpty { return false }
+                guard let count = Int(fyjCount), count >= 0, let amount = Int(fyjMoney),
+                      amount == 5 || (amount == 0 && count == 0) else { return nil }
+                return amount == 5
+            }
+        }
+
+        let state: Int
+        let result: [Entry]
+
+        init(data: Data) throws {
+            self = try JSONDecoder().decode(Self.self, from: data)
+            guard state == 0 else { throw URLError(.cannotParseResponse) }
+        }
+    }
+
+    func checkingGoodFortune(_ data: Data, for draw: LotteryDraw) throws -> Self {
+        let notice = try NationalNotice(data: data)
+        guard notice.result.count == 1, let status = notice.result.first?.fortuneStatus(for: draw) else {
+            throw URLError(.cannotParseResponse)
+        }
+        guard status else { return self }
         var confirmed = amounts
-        confirmed[.goodFortune] = Decimal(amount)
+        confirmed[.goodFortune] = LotteryPrize.goodFortune.fixedAmount
         return Self(amounts: confirmed, includesGoodFortune: true, promotions: promotions,
                     hasOtherPromotions: hasOtherPromotions, fromArchive: fromArchive)
     }

@@ -84,6 +84,19 @@ struct LotteryPortfolioTests {
         #expect(selection.formattedNumbers == "01 09 10 20 31 33 + 02")
     }
 
+    @Test(arguments: [1, 9, 10, 11, 15, 16, 17, 1_000])
+    func frequencyWeightingPreservesCoverageAndTheRequestedBudget(count: Int) {
+        var generator = SeededGenerator()
+        let portfolio = LotteryPortfolio(count: count, using: &generator)
+        let tickets = portfolio.selections(for: .frequency, frequencies: LotteryFrequencyModel(), using: &generator)
+        #expect(tickets.count == count)
+        #expect(Set(tickets).count == count)
+        expectDistinctCoverage(Array(tickets.prefix(16)))
+        if count == 10 {
+            #expect(Set(tickets.flatMap(\.redNumbers)).count == 33)
+        }
+    }
+
     private func expectDistinctCoverage(_ selections: [LotterySelection]) {
         let blues = Set(selections.map(\.blueNumber))
         #expect(blues.count == selections.count)

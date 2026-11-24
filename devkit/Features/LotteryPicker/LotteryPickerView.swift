@@ -5,7 +5,7 @@ struct LotteryPickerView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var model = LotteryHistoryModel()
     @State private var issueText = ""
-    @State private var strategy = LotteryBacktest.Strategy.coverage
+    @State private var historicalStrategy = LotteryBacktest.Strategy.latest
     @State private var recommendation: Recommendation?
     @State private var archiveError: String?
     @State private var copiedIndex: Int?
@@ -59,6 +59,13 @@ struct LotteryPickerView: View {
         case unavailable(LotteryDraw)
     }
 
+    private var isHistoricalIssue: Bool {
+        let issue = issueText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !issue.isEmpty && model.draws.contains { $0.issue == issue }
+    }
+
+    private var strategy: LotteryBacktest.Strategy { isHistoricalIssue ? historicalStrategy : .latest }
+
     private var input: BacktestInput {
         BacktestInput(
             target: LotteryTargetIssue.resolve(issueText, latest: model.draws.last, nextDrawDate: schedule?.date),
@@ -103,6 +110,9 @@ struct LotteryPickerView: View {
                             .font(.headline)
                         if let backtest = recommendation.backtest {
                             Text("选号使用 \(String(LotteryDrawArchive.firstIssue))～\(backtest.lastHistoryIssue) 共 \(backtest.historyCount) 期")
+                            if strategy == .frequency {
+                                Text("实验策略依据以往开奖频率分配号码。若当期开设福运奖，这 10 注至少中一注的理论概率为 \(LotteryPortfolio.frequencyTenTicketFortuneProbability.formatted(.percent.precision(.fractionLength(2))))。")
+                            }
                             Text("公平开奖、常规奖级下，至少中一注的概率为 \(backtest.portfolio.anyPrizeProbability.formatted(.percent.precision(.fractionLength(2))))。")
                         }
                         Text("公平开奖、常规奖级下，至少中一注四等奖及以上的理论概率为 \(LotteryPortfolio.highPrizeTheory(count: recommendation.selections.count, random: false))。")
@@ -190,10 +200,14 @@ struct LotteryPickerView: View {
             Button("使用下一期") { issueText = "" }
                 .disabled(issueText.isEmpty)
             Spacer(minLength: 0)
-            Picker("策略", selection: $strategy) {
-                ForEach(LotteryBacktest.Strategy.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            if isHistoricalIssue {
+                Picker("历史策略", selection: $historicalStrategy) {
+                    ForEach(LotteryBacktest.Strategy.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .fixedSize()
+            } else {
+                Text("当前策略 · \(strategy.rawValue)").foregroundStyle(.secondary)
             }
-            .fixedSize()
         }
     }
 

@@ -25,6 +25,12 @@ nonisolated struct LotteryPortfolio {
     private static let redDrawCount = 1_107_568
     private static let redDrawsWithFourOrMoreHits = 5_428
 
+    static var frequencyTenTicketFortuneProbability: Double {
+        let coveredBlues = LotteryCoverageDesign.redLines.count
+        let outcomes = coveredBlues * redDrawCount + (blueNumbers.count - coveredBlues) * LotteryCoverageDesign.redOutcomesWithThreeOrMoreHits
+        return Double(outcomes) / Double(blueNumbers.count * redDrawCount)
+    }
+
     static func highPrizeTheory(count: Int, random: Bool) -> String {
         let fiveOrSixReds = 6 * 27 + 1
         let exactlyFourReds = redDrawsWithFourOrMoreHits - fiveOrSixReds
@@ -78,8 +84,35 @@ nonisolated struct LotteryPortfolio {
         return Double(winningOutcomes) / Double(totalOutcomes)
     }
 
-    func selections(for strategy: LotteryBacktest.Strategy, using generator: inout some RandomNumberGenerator) -> [LotterySelection] {
-        strategy == .spread ? spreadRedNumbers(using: &generator) : selections
+    func selections(for strategy: LotteryBacktest.Strategy, frequencies: LotteryFrequencyModel,
+                    using generator: inout some RandomNumberGenerator) -> [LotterySelection] {
+        switch strategy {
+        case .coverage: return selections
+        case .spread: return spreadRedNumbers(using: &generator)
+        case .frequency:
+            let labels = frequencies.rankedLabels(using: &generator)
+            if selections.count <= LotteryCoverageDesign.redLines.count {
+                return LotteryCoverageDesign.redLines.prefix(selections.count).enumerated().map { index, line in
+                    LotterySelection(redNumbers: line.map { labels.reds[$0] }.sorted(), blueNumber: labels.blues[index])
+                }
+            }
+
+            var occurrences = Array(repeating: 0, count: 34)
+            for ticket in selections {
+                for red in ticket.redNumbers { occurrences[red] += 1 }
+            }
+            let slots = (1...33).sorted { left, right in
+                occurrences[left] == occurrences[right] ? left < right : occurrences[left] > occurrences[right]
+            }
+            var redLabels = Array(0...33)
+            for (slot, label) in zip(slots, labels.reds) { redLabels[slot] = label }
+            var blueLabels = Array(0...16)
+            for (ticket, label) in zip(selections.prefix(16), labels.blues) { blueLabels[ticket.blueNumber] = label }
+            return selections.map { ticket in
+                LotterySelection(redNumbers: ticket.redNumbers.map { redLabels[$0] }.sorted(),
+                                 blueNumber: blueLabels[ticket.blueNumber])
+            }
+        }
     }
 
     func spreadRedNumbers(using generator: inout some RandomNumberGenerator) -> [LotterySelection] {

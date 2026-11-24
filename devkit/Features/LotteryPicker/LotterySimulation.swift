@@ -96,7 +96,7 @@ struct LotterySimulation {
     @MainActor
     static func run(
         draws: [LotteryDraw], through issue: String, ticketsPerPeriod: Int = defaultTicketCount,
-        strategy: LotteryBacktest.Strategy = .coverage, sampleSeed: UInt64? = nil,
+        strategy: LotteryBacktest.Strategy = .latest, sampleSeed: UInt64? = nil,
         archive: LotteryRecommendationArchive? = nil,
         select: (@MainActor (String, ArraySlice<LotteryDraw>, Int, UInt64?) -> [LotterySelection]?)? = nil,
         notice: @escaping @MainActor (LotteryDraw) async throws -> LotteryPrizeAnnouncement = LotteryPrizeAnnouncement.fetch(for:),

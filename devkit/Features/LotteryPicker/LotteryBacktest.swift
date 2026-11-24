@@ -33,6 +33,9 @@ struct LotteryBacktest {
     nonisolated enum Strategy: String, CaseIterable, Sendable {
         case coverage = "组合覆盖 v1"
         case spread = "红球分散 v2"
+        case frequency = "频率加权 v3"
+
+        static var latest: Self { allCases.last ?? .coverage }
     }
 
     struct Prediction {
@@ -46,7 +49,7 @@ struct LotteryBacktest {
     let portfolio: Prediction
     let draw: LotteryDraw?
 
-    init?(issue: String, draws: [LotteryDraw], strategy: Strategy = .coverage) {
+    init?(issue: String, draws: [LotteryDraw], strategy: Strategy = .latest) {
         let history = draws.prefix { $0.issue < issue }
         let targetDraw = draws.dropFirst(history.count).first
         guard targetDraw == nil || targetDraw?.issue == issue,
@@ -60,7 +63,7 @@ struct LotteryBacktest {
     }
 
     static func makePortfolio(issue: String, history: ArraySlice<LotteryDraw>, count: Int = 10,
-                              strategy: Strategy = .coverage, sampleSeed: UInt64? = nil) -> Prediction? {
+                              strategy: Strategy = .latest, sampleSeed: UInt64? = nil) -> Prediction? {
         guard history.first?.issue == String(LotteryDrawArchive.firstIssue),
               let last = history.last, last.issue < issue,
               let issueNumber = Int(issue),
@@ -71,10 +74,14 @@ struct LotteryBacktest {
 
         var words: [UInt64] = []
         words.reserveCapacity(history.count * 8)
-        for draw in history { LotteryHistoryGenerator.append(draw, to: &words) }
+        var frequencies = LotteryFrequencyModel()
+        for draw in history {
+            LotteryHistoryGenerator.append(draw, to: &words)
+            if strategy == .frequency { frequencies.observe(draw) }
+        }
         var generator = LotteryHistoryGenerator(issue: issue, historyWords: words, sampleSeed: sampleSeed)
         let baseline = LotteryPortfolio(count: count, using: &generator)
-        let selections = baseline.selections(for: strategy, using: &generator)
+        let selections = baseline.selections(for: strategy, frequencies: frequencies, using: &generator)
         return Prediction(selections: selections, anyPrizeProbability: baseline.anyPrizeProbability)
     }
 }

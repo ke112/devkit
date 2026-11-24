@@ -80,10 +80,20 @@ struct LotterySimulationView: View {
             if let comparison {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
-                        comparisonTable(comparison.all, title: "全部可复盘历史")
-                        comparisonTable(comparison.recent, title: "最近 \(comparison.recent.periods) 期")
-                        Text("一至六等列为常规奖中奖注数。两种策略优先采用开奖前留存的原票，其余期按当时可用的历史重建。均匀机选每注独立抽取，同一期可复现。")
-                            .font(.caption).foregroundStyle(.secondary)
+                        benchmarkTable(comparison.benchmark)
+                        DisclosureGroup("更多历史统计") {
+                            VStack(alignment: .leading, spacing: 20) {
+                                comparisonTable(comparison.all, title: "全部可复盘历史")
+                                comparisonTable(comparison.recent, title: "最近 \(comparison.recent.periods) 期")
+                                if let validation = comparison.validation, let summary = comparison.validationSummary {
+                                    comparisonTable(validation, title: "2020 年起逐期验证")
+                                    Text(summary).font(.caption).foregroundStyle(.secondary)
+                                }
+                                Text("一至六等列为常规奖中奖注数。")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            .padding(.top, 8)
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -149,7 +159,11 @@ struct LotterySimulationView: View {
             } else {
                 Spacer()
                 ProgressView(value: Double(completed), total: Double(max(1, total))) {
-                    Text("正在\(mode == .comparison ? "比较策略" : "复盘并核奖") · \(completed) / \(total) 期")
+                    if mode == .comparison && completed == 0 {
+                        Text("正在准备历史数据并核对福运奖公告…")
+                    } else {
+                        Text("正在\(mode == .comparison ? "比较策略" : "复盘并核奖") · \(completed) / \(total) 期")
+                    }
                 }
                 .padding(.horizontal, 80)
                 Spacer()
@@ -160,6 +174,38 @@ struct LotterySimulationView: View {
         .task(id: runID) { await run() }
         .sheet(isPresented: $isPrizeRulesPresented) {
             LotteryPrizeRulesView()
+        }
+    }
+
+    private func benchmarkTable(_ window: LotteryComparison.Window) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("最近 \(window.periods) 期中奖率").font(.headline)
+            Text("\(window.firstIssue)～\(window.lastIssue) · 每期至少一注中奖计为命中一期，任意奖含当期开设的福运奖。")
+                .font(.caption).foregroundStyle(.secondary)
+            Grid(alignment: .trailing, horizontalSpacing: 24, verticalSpacing: 6) {
+                GridRow {
+                    Text("策略").gridColumnAlignment(.leading)
+                    Text("任意奖")
+                    Text("四等奖及以上")
+                }
+                .font(.caption).foregroundStyle(.secondary)
+                ForEach(LotteryComparison.Method.allCases, id: \.self) { method in
+                    let totals = window.totals[method, default: .init()]
+                    GridRow {
+                        Text(method.title)
+                        Text(window.anyPrizeText(totals))
+                        Text("\(totals.highPrizePeriods) 期 · \(window.rate(totals.highPrizePeriods))")
+                    }
+                }
+            }
+            .font(.callout).monospacedDigit()
+            Text(window.leaders).font(.callout.weight(.medium))
+            Text("有开奖前原票就用原票，其余逐期用此前历史选号；机选使用同一组可复现的随机样本。")
+                .font(.caption).foregroundStyle(.secondary)
+            if window.totals.values.contains(where: { $0.uncertainWinningPeriods > 0 }) {
+                Text("部分福运奖公告待核对。区间下限为已确认中奖的期数，上限包含可能只中福运奖的期数。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -270,9 +316,9 @@ struct LotterySimulationView: View {
         total = mode == .comparison ? available : min(available, LotterySimulation.periodCount)
         do {
             if mode == .comparison {
-                let result = try await LotteryComparison.run(draws: draws, through: issue, archive: LotteryRecommendationArchive.load()) { done, _ in
+                let result = try await LotteryComparison.run(draws: draws, through: issue, archive: LotteryRecommendationArchive.load(), progress: { done, _ in
                     await MainActor.run { if !Task.isCancelled { completed = done } }
-                }
+                })
                 try Task.checkCancellation()
                 comparison = result
                 return
