@@ -13,12 +13,10 @@
   },
   "import": {
     "localizations_root": "localizations",
-    "feishu_sheet_url": "https://example.feishu.cn/wiki/example-sheet",
+    "feishu_sheet_url": "https://rg975ojk5z.feishu.cn/wiki/AGU2wyuJjixbGOkPiuCc3J5tn5d?sheet=n93GiK",
     "lark_identity": "auto",
     "disabled_locales": [],
-    "locale_map": {
-      "英语": "en-US"
-    }
+    "locale_map": {}
   },
   "upload": {
     "localizations_root": "localizations",

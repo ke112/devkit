@@ -115,6 +115,30 @@ struct AppStoreReleaseConfiguration: Codable, Equatable {
 }
 
 enum AppStoreReleaseConfigurationFile {
+    static let gameWaveDocumentID = "AGU2wyuJjixbGOkPiuCc3J5tn5d"
+
+    static func gameWaveExampleURL() throws -> URL {
+        guard let url = Bundle.main.url(forResource: "feishu-profile-\(gameWaveDocumentID)", withExtension: "json") else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        return url
+    }
+
+    static func editableGameWaveProfile(in storageDirectory: URL) throws -> URL {
+        let directory = storageDirectory.appending(path: "feishu-profiles", directoryHint: .isDirectory)
+        let url = directory.appending(path: "\(gameWaveDocumentID).json")
+        let manager = FileManager.default
+        if !manager.fileExists(atPath: url.path) {
+            try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+            do {
+                try manager.copyItem(at: gameWaveExampleURL(), to: url)
+            } catch let error as CocoaError where error.code == .fileWriteFileExists {
+                return url
+            }
+        }
+        return url
+    }
+
     static var storageDirectoryURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appending(path: "DevKit/AppStoreRelease", directoryHint: .isDirectory)

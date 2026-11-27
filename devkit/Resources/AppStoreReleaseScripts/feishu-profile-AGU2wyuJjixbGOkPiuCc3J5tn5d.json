@@ -1,0 +1,15 @@
+{
+  "layout": "languages_in_rows",
+  "range": "A1:U200",
+  "language_header": "语言",
+  "fields": {
+    "更新描述": "whatsNew"
+  },
+  "locale_map": {
+    "英语": "en-US",
+    "英文": "en-US",
+    "印尼语": "id",
+    "印度尼西亚语": "id",
+    "菲律宾语": "fil-PH"
+  }
+}

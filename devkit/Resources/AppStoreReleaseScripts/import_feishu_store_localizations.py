@@ -1,13 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-从飞书 Wiki 表格导入 App Store 多语种 metadata.json。
-
-表格模板：
-- 第一行是字段名。
-- 每个语种一行，通过“语言”列映射到 App Store locale。
-- DevKit 会通过 `--config` 传入独立配置，物料默认写入配置文件旁的
-  `localizations/<locale>/metadata.json`。
+按文档规则，从飞书链接指定的子表导入 App Store 多语种 metadata.json。
+文档映射保存在 --config 旁的 feishu-profiles/<文档标识>.json，同名本地规则优先于内置规则。
 
 示例：
 python3 import_feishu_store_localizations.py --config app_store_connect.json --dry-run
@@ -19,46 +14,31 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from io import StringIO
+from itertools import zip_longest
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 LOCAL_CONFIG_PATH = SCRIPT_DIR / 'config' / 'app_store_connect.local.json'
-EXAMPLE_CONFIG_PATH = SCRIPT_DIR / 'config' / 'app_store_connect.example.json'
+EXAMPLE_CONFIG_PATH = SCRIPT_DIR / 'app_store_connect.example.json'
 DEFAULT_CONFIG_PATH = (
     LOCAL_CONFIG_PATH
     if LOCAL_CONFIG_PATH.is_file()
     else EXAMPLE_CONFIG_PATH
 )
-DEFAULT_FEISHU_SHEET_URL = (
-    'https://example.feishu.cn/wiki/example-sheet'
-)
-DEFAULT_SHEET_RANGE = 'A1:U200'
 DEFAULT_LARK_IDENTITY = 'auto'
-DEFAULT_LOCALE_MAP = {
-    '英语': 'en-US',
-    '英文': 'en-US',
-    '印尼语': 'id',
-    '印度尼西亚语': 'id',
-    '菲律宾语': 'fil-PH',
+DEFAULT_SHEET_RANGE = 'A1:U200'
+METADATA_FIELDS = {
+    'name', 'whatsNew', 'subtitle', 'promotionalText', 'description',
+    'keywords', 'supportUrl', 'marketingUrl', 'privacyPolicyUrl',
 }
-FIELD_MAP = {
-    'App名': 'name',
-    '更新描述': 'whatsNew',
-    '副标题': 'subtitle',
-    '推广文本': 'promotionalText',
-    '描述': 'description',
-    '关键词': 'keywords',
-    '技术支持网址 (URL)': 'supportUrl',
-    '营销网址 (URL)': 'marketingUrl',
-}
-REQUIRED_COLUMNS = {'语言'}
 RETRYABLE_ERROR_MARKERS = (
     '"subtype": "timeout"',
     'TLS handshake timeout',
@@ -77,6 +57,79 @@ class ImportConfig:
     locale_map: dict[str, str]
     default_name: str | None
     lark_identity: str
+
+
+@dataclass(frozen=True)
+class DocumentProfile:
+    language_header: str
+    fields: dict[str, str]
+    locale_map: dict[str, str]
+    layout: str
+    sheet_range: str
+
+
+def document_target(url: str) -> tuple[str, str]:
+    parsed = urlparse(url)
+    document = re.fullmatch(r'/(?:wiki|sheets|spreadsheets)/([A-Za-z0-9_-]+)/?', parsed.path)
+    if parsed.scheme != 'https' or not parsed.hostname or not document:
+        raise ValueError('请粘贴飞书 Wiki 或电子表格的完整 HTTPS 链接')
+    sheet_ids = parse_qs(parsed.query, keep_blank_values=True).get('sheet', [])
+    if len(sheet_ids) != 1 or not re.fullmatch(r'[A-Za-z0-9_-]+', sheet_ids[0]):
+        raise ValueError('请打开发版子表并复制带 ?sheet=子表标识 的链接')
+    return document[1], sheet_ids[0]
+
+
+def string_map(value: Any, key: str) -> dict[str, str]:
+    if not isinstance(value, dict) or not value:
+        raise ValueError(f'{key} 需要至少一组映射')
+    result = {}
+    for label, target in value.items():
+        header = normalize_header(label)
+        if not header or not isinstance(target, str) or not target.strip() or header in result:
+            raise ValueError(f'{key} 中的映射无效或重复: {label!r}')
+        result[header] = target.strip()
+    return result
+
+
+def locale_mapping(value: Any) -> dict[str, str]:
+    mapping = string_map(value, 'locale_map')
+    for locale in mapping.values():
+        if not re.fullmatch(r'[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*', locale):
+            raise ValueError(f'locale_map 中的 locale 无效: {locale}')
+    return mapping
+
+
+def parse_profile(data: Any) -> DocumentProfile:
+    if not isinstance(data, dict) or not isinstance(data.get('language_header'), str):
+        raise ValueError('缺少语种表头（language_header）')
+    language_header = normalize_header(data['language_header'])
+    fields = string_map(data.get('fields'), 'fields')
+    if not language_header or language_header in fields:
+        raise ValueError('语种表头不能为空或与物料表头相同')
+    for target in fields.values():
+        if target not in METADATA_FIELDS:
+            raise ValueError(f'不支持的 App Store 字段: {target}')
+    if len(set(fields.values())) != len(fields):
+        raise ValueError('多个表头不能映射到同一 App Store 字段')
+    layout = data.get('layout', 'languages_in_rows')
+    if layout not in ('languages_in_rows', 'languages_in_columns'):
+        raise ValueError(f'不支持的 layout: {layout}')
+    sheet_range = data.get('range', DEFAULT_SHEET_RANGE)
+    if not isinstance(sheet_range, str) or not re.fullmatch(r'[A-Z]+[1-9]\d*:[A-Z]+[1-9]\d*', sheet_range):
+        raise ValueError('读取范围请填写 A1:H200 形式的子表范围')
+    return DocumentProfile(language_header, fields, locale_mapping(data.get('locale_map')), layout, sheet_range)
+
+
+def load_profile(directory: Path, document: str) -> DocumentProfile:
+    local = directory / 'feishu-profiles' / f'{document}.json'
+    path = local if local.exists() else SCRIPT_DIR / f'feishu-profile-{document}.json'
+    if not path.is_file():
+        guide = SCRIPT_DIR / 'feishu-import-guide.md'
+        raise ValueError(f'此飞书文档尚无字段映射，请配置 {local}。填表说明见 {guide}')
+    try:
+        return parse_profile(json.loads(path.read_text(encoding='utf-8')))
+    except ValueError as exc:
+        raise ValueError(f'导入规则 {path} 有误: {exc}') from exc
 
 
 def is_retryable_lark_error(output: str) -> bool:
@@ -121,113 +174,29 @@ def run_lark_cli(args: list[str], max_attempts: int = 3) -> dict[str, Any]:
     return json.loads(stdout[json_start:])
 
 
-def sheet_id_from_url(url_or_token: str) -> str | None:
-    parsed = urlparse(url_or_token)
-    values = parse_qs(parsed.query).get('sheet')
-    if values:
-        sheet_id = values[0].strip()
-        if sheet_id:
-            return sheet_id
-    return None
-
-
-def resolve_wiki_sheet(url_or_token: str, identity: str) -> tuple[str, str]:
-    requested_sheet_id = sheet_id_from_url(url_or_token)
-    node_result = run_lark_cli([
-        'wiki',
-        '+node-get',
-        '--as',
-        identity,
-        '--node-token',
-        url_or_token,
-        '--format',
-        'json',
-    ])
-    node = node_result.get('data') or {}
-    obj_type = node.get('obj_type')
-    if obj_type != 'sheet':
-        raise ValueError(f'飞书节点不是表格: {obj_type}')
-
-    spreadsheet_token = str(node.get('obj_token') or '').strip()
-    if not spreadsheet_token:
-        raise ValueError('飞书节点缺少 obj_token')
-
-    workbook_result = run_lark_cli([
-        'sheets',
-        '+workbook-info',
-        '--as',
-        identity,
-        '--spreadsheet-token',
-        spreadsheet_token,
-        '--format',
-        'json',
-    ])
-    sheets = (workbook_result.get('data') or {}).get('sheets') or []
-    if not sheets:
-        raise ValueError('飞书表格没有工作表')
-
-    if requested_sheet_id:
-        sheet_ids = {
-            str(sheet.get('sheet_id') or '').strip()
-            for sheet in sheets
-            if str(sheet.get('sheet_id') or '').strip()
-        }
-        if requested_sheet_id not in sheet_ids:
-            available = ', '.join(sorted(sheet_ids))
-            raise ValueError(
-                f'URL 指定的 sheet 不存在: {requested_sheet_id}'
-                f'；可用 sheet_id: {available}',
-            )
-        return spreadsheet_token, requested_sheet_id
-
-    sheet_id = str(sheets[0].get('sheet_id') or '').strip()
-    if not sheet_id:
-        raise ValueError('飞书工作表缺少 sheet_id')
-    return spreadsheet_token, sheet_id
-
-
-def spreadsheet_column_name(index: int) -> str:
-    name = ''
-    value = index + 1
-    while value > 0:
-        value, remainder = divmod(value - 1, 26)
-        name = chr(ord('A') + remainder) + name
-    return name
-
-
-def parse_csv_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
+def parse_csv_rows(data: dict[str, Any]) -> list[list[str]]:
     rows = data.get('rows')
     if isinstance(rows, list):
-        return rows
+        columns = data.get('col_indices') or sorted(
+            {column for row in rows for column in row['values']},
+            key=lambda column: (len(column), column),
+        )
+        return [[clean_cell(row['values'].get(column)) for column in columns] for row in rows]
 
     annotated_csv = data.get('annotated_csv')
     if not isinstance(annotated_csv, str):
         raise ValueError('lark-cli +csv-get 未返回 rows 或 annotated_csv')
 
-    col_indices = data.get('col_indices') or []
-    if not col_indices:
-        col_count = int(data.get('col_count') or 0)
-        col_indices = [spreadsheet_column_name(index) for index in range(col_count)]
-
-    parsed_rows: list[dict[str, Any]] = []
-    for row_values in csv.reader(StringIO(annotated_csv)):
-        values = {
-            str(column): value
-            for column, value in zip(col_indices, row_values)
-        }
-        parsed_rows.append({'values': values})
-    return parsed_rows
+    return list(csv.reader(StringIO(annotated_csv), skipinitialspace=True))
 
 
-def fetch_sheet_rows(url_or_token: str, sheet_range: str, identity: str) -> list[dict[str, Any]]:
-    spreadsheet_token, sheet_id = resolve_wiki_sheet(url_or_token, identity)
+def fetch_sheet_rows(url: str, sheet_id: str, sheet_range: str, identity: str) -> list[list[str]]:
     result = run_lark_cli([
         'sheets',
         '+csv-get',
-        '--as',
-        identity,
-        '--spreadsheet-token',
-        spreadsheet_token,
+        *(['--as', identity] if identity != 'auto' else []),
+        '--url',
+        url,
         '--sheet-id',
         sheet_id,
         '--range',
@@ -239,7 +208,7 @@ def fetch_sheet_rows(url_or_token: str, sheet_range: str, identity: str) -> list
     data = result.get('data') or {}
     if data.get('has_more'):
         raise ValueError(
-            f'读取范围 {sheet_range} 被截断，请扩大 --range 后重试',
+            '子表读取结果被截断，请用 --range 指定完整的物料区域后重试',
         )
     return parse_csv_rows(data)
 
@@ -265,56 +234,50 @@ def split_keywords(value: str) -> list[str]:
     return parts
 
 
-def find_header_row(rows: list[dict[str, Any]]) -> tuple[dict[str, str], int]:
-    for row_index, row in enumerate(rows):
-        values = {
-            column: normalize_header(clean_cell(value))
-            for column, value in (row.get('values') or {}).items()
-        }
-        headers = {header: column for column, header in values.items() if header}
-        if REQUIRED_COLUMNS.issubset(headers):
-            return headers, row_index
-    raise ValueError(f'飞书表格缺少表头列: {", ".join(sorted(REQUIRED_COLUMNS))}')
-
-
 def parse_store_metadata(
-    rows: list[dict[str, Any]],
-    locale_map: dict[str, str],
-    default_name: str | None,
+    rows: list[list[str]],
+    profile: DocumentProfile,
+    configured_locales: dict[str, str],
 ) -> dict[str, dict[str, Any]]:
-    headers, header_row_index = find_header_row(rows)
-    language_column = headers['语言']
-    field_columns = {
-        field_name: headers[header]
-        for header, field_name in FIELD_MAP.items()
-        if header in headers
-    }
+    records = zip_longest(*rows, fillvalue='') if profile.layout == 'languages_in_columns' else iter(rows)
+    for record in records:
+        headers = [normalize_header(value) for value in record]
+        if profile.language_header in headers:
+            break
+    else:
+        raise ValueError(f'当前子表缺少语种表头: {profile.language_header}')
 
+    for label in [profile.language_header, *profile.fields]:
+        if label not in headers:
+            raise ValueError(f'当前子表缺少规则指定的表头: {label}')
+        if headers.count(label) > 1:
+            raise ValueError(f'当前子表包含重复表头: {label}')
+
+    language_column = headers.index(profile.language_header)
+    field_columns = {headers.index(label): target for label, target in profile.fields.items()}
+    locale_map = configured_locales or profile.locale_map
     payload: dict[str, dict[str, Any]] = {}
-    for row in rows[header_row_index + 1:]:
-        values = row.get('values') or {}
-        language = clean_cell(values.get(language_column))
-        if not language:
-            continue
-
-        locale = locale_map.get(language)
-        if not locale:
-            print(f'warning: 跳过未映射语言 {language}', file=sys.stderr)
-            continue
-
-        metadata = payload.setdefault(locale, {'locale': locale})
-        for field_name, column in field_columns.items():
-            value = clean_cell(values.get(column))
+    for record in records:
+        metadata = {}
+        for column, field_name in field_columns.items():
+            value = clean_cell(record[column]) if column < len(record) else ''
             if not value:
                 continue
-            if field_name == 'keywords':
-                metadata[field_name] = split_keywords(value)
-            else:
-                metadata[field_name] = value
-
-        if default_name and not metadata.get('name'):
-            metadata['name'] = default_name
-
+            metadata[field_name] = split_keywords(value) if field_name == 'keywords' else value
+        if not metadata:
+            continue
+        language = normalize_header(record[language_column]) if language_column < len(record) else ''
+        if not language:
+            raise ValueError(f'发现已填写物料但缺少「{profile.language_header}」的记录')
+        locale = locale_map.get(language)
+        if not locale:
+            if configured_locales:
+                print(f'跳过发版配置未选用的语言: {language}', file=sys.stderr)
+                continue
+            raise ValueError(f'导入规则缺少语言映射: {language}')
+        if locale in payload:
+            raise ValueError(f'当前子表的 {locale} 有多条物料，请为每个语种只保留一条')
+        payload[locale] = {'locale': locale, **metadata}
     return payload
 
 
@@ -346,6 +309,7 @@ def write_metadata_files(
     disabled_locales: set[str],
     selected_locales: set[str],
     dry_run: bool,
+    default_name: str | None,
 ) -> None:
     target_locales = sorted(
         locale
@@ -364,6 +328,8 @@ def write_metadata_files(
             before = json.loads(metadata_path.read_text(encoding='utf-8'))
 
         after = merge_metadata(before, payload[locale])
+        if default_name and not after.get('name'):
+            after['name'] = default_name
         changes = changed_fields(before, after)
 
         if dry_run:
@@ -403,25 +369,15 @@ def load_config(config_path: Path) -> ImportConfig:
     raw_url = str(
         import_data.get('feishu_sheet_url')
         or import_data.get('doc')
-        or DEFAULT_FEISHU_SHEET_URL,
+        or '',
     ).strip()
-    if not raw_url:
-        raise ValueError('配置缺少 import.feishu_sheet_url')
-
     disabled_locales = {
         str(item).strip()
         for item in import_data.get('disabled_locales', [])
         if str(item).strip()
     }
-    configured_locale_map = import_data.get('locale_map')
-    if configured_locale_map:
-        locale_map = {
-            str(label).strip(): str(locale).strip()
-            for label, locale in configured_locale_map.items()
-            if str(label).strip() and str(locale).strip()
-        }
-    else:
-        locale_map = dict(DEFAULT_LOCALE_MAP)
+    configured_locale_map = import_data.get('locale_map') or {}
+    locale_map = locale_mapping(configured_locale_map) if configured_locale_map else {}
     default_name = str(app_data.get('default_name') or '').strip() or None
     lark_identity = str(import_data.get('lark_identity') or DEFAULT_LARK_IDENTITY).strip()
     if lark_identity not in {'auto', 'user', 'bot'}:
@@ -449,12 +405,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         '--doc',
-        help='飞书 Wiki 表格 URL 或 token；默认读取配置 import.feishu_sheet_url',
+        help='带 ?sheet= 的飞书 Wiki 或电子表格链接，默认读取配置 import.feishu_sheet_url',
     )
     parser.add_argument(
         '--range',
-        default=DEFAULT_SHEET_RANGE,
-        help='读取的 A1 范围，默认 A1:U200',
+        help='临时覆盖导入规则的 A1 范围',
     )
     parser.add_argument(
         '--output-dir',
@@ -493,9 +448,11 @@ def main() -> int:
     )
     lark_identity = args.lark_identity or config.lark_identity
 
-    print(f'读取飞书表格: {feishu_sheet_url}')
-    rows = fetch_sheet_rows(feishu_sheet_url, args.range, lark_identity)
-    payload = parse_store_metadata(rows, config.locale_map, config.default_name)
+    document, sheet_id = document_target(feishu_sheet_url)
+    profile = load_profile(config_path.parent, document)
+    print(f'读取飞书文档 {document} 的子表 {sheet_id}，导入字段: {", ".join(profile.fields)}')
+    rows = fetch_sheet_rows(feishu_sheet_url, sheet_id, args.range or profile.sheet_range, lark_identity)
+    payload = parse_store_metadata(rows, profile, config.locale_map)
     print(f'解析到 {len(payload)} 个语种，输出目录: {output_dir}')
 
     write_metadata_files(
@@ -504,6 +461,7 @@ def main() -> int:
         disabled_locales=config.disabled_locales,
         selected_locales=set(args.locale),
         dry_run=bool(args.dry_run),
+        default_name=config.default_name if 'name' in profile.fields.values() else None,
     )
     return 0
 

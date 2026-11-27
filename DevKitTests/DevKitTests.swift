@@ -1401,6 +1401,22 @@ struct DevKitTests {
         )
     }
 
+    @Test func gameWaveRuleEditorOpensImporterOverrideAndPreservesEdits() throws {
+        let storage = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: storage) }
+        let example = try AppStoreReleaseConfigurationFile.exampleConfiguration()
+        let documentID = try #require(URL(string: example.importSettings.feishuSheetURL)?.lastPathComponent)
+        let profile = try AppStoreReleaseConfigurationFile.editableGameWaveProfile(in: storage)
+        #expect(profile == storage.appending(path: "feishu-profiles/\(documentID).json"))
+        let bundledData = try Data(contentsOf: AppStoreReleaseConfigurationFile.gameWaveExampleURL())
+        #expect(try Data(contentsOf: profile) == bundledData)
+        let editedData = Data(String(decoding: bundledData, as: UTF8.self)
+            .replacingOccurrences(of: "更新描述", with: "版本亮点").utf8)
+        try editedData.write(to: profile)
+        let reopened = try AppStoreReleaseConfigurationFile.editableGameWaveProfile(in: storage)
+        #expect(try Data(contentsOf: reopened) == editedData)
+    }
+
     @Test func appStoreReleaseConfigurationPreservesEveryField() throws {
         let data = Data(
             """

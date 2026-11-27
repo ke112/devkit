@@ -10,6 +10,7 @@ struct AppStoreReleaseView: View {
     @State private var shouldExportExampleAfterDismiss = false
     @State private var isExportingExample = false
     @State private var exampleDocument: AppStoreConfigurationDocument?
+    @State private var exampleFilename = ""
     @State private var isImportLocaleMapValid = true
     @State private var isScreenshotDirectoryMapValid = true
     @State private var isVersionManagerPresented = false
@@ -34,11 +35,11 @@ struct AppStoreReleaseView: View {
                 .help("导入本地 App Store Connect 配置")
 
                 Button {
-                    presentExample()
+                    isExamplePresented = true
                 } label: {
                     Label("示例配置", systemImage: "doc.text.magnifyingglass")
                 }
-                .help("下载示例配置文件")
+                .help("查看发版示例、编辑 GameWave 规则和阅读填表说明")
             }
         }
         .confirmationDialog(
@@ -66,7 +67,7 @@ struct AppStoreReleaseView: View {
         }
         .alert("首次使用发版流程", isPresented: $model.isFirstUse) {
             Button("查看示例配置") {
-                presentExample()
+                isExamplePresented = true
             }
             Button("稍后设置", role: .cancel) {}
         } message: {
@@ -89,7 +90,7 @@ struct AppStoreReleaseView: View {
             isPresented: $isExportingExample,
             document: exampleDocument,
             contentType: .json,
-            defaultFilename: "app_store_connect.example.json"
+            defaultFilename: exampleFilename
         ) { result in
             if case .failure(let error) = result {
                 model.alertMessage = error.localizedDescription
@@ -100,14 +101,11 @@ struct AppStoreReleaseView: View {
             shouldExportExampleAfterDismiss = false
             isExportingExample = true
         }) {
-            if let exampleDocument {
-                AppStoreConfigurationExampleView(
-                    content: exampleDocument.content,
-                    onDownload: {
-                        shouldExportExampleAfterDismiss = true
-                        isExamplePresented = false
-                    }
-                )
+            AppStoreConfigurationExampleView(storageDirectory: model.storageDirectoryURL) { content, filename in
+                exampleDocument = AppStoreConfigurationDocument(data: Data(content.utf8))
+                exampleFilename = filename
+                shouldExportExampleAfterDismiss = true
+                isExamplePresented = false
             }
         }
         .sheet(isPresented: $isVersionManagerPresented) {
@@ -144,19 +142,6 @@ struct AppStoreReleaseView: View {
         .onChange(of: model.configurationRevision) {
             isImportLocaleMapValid = true
             isScreenshotDirectoryMapValid = true
-        }
-    }
-
-    private func presentExample() {
-        do {
-            exampleDocument = try AppStoreConfigurationDocument(
-                data: AppStoreReleaseConfigurationFile.encodedData(
-                    AppStoreReleaseConfigurationFile.exampleConfiguration()
-                )
-            )
-            isExamplePresented = true
-        } catch {
-            model.alertMessage = error.localizedDescription
         }
     }
 
@@ -637,10 +622,6 @@ private struct AppStoreConfigurationDocument: FileDocument {
 
     let data: Data
 
-    var content: String {
-        String(decoding: data, as: UTF8.self)
-    }
-
     init(data: Data) {
         self.data = data
     }
@@ -658,42 +639,120 @@ private struct AppStoreConfigurationDocument: FileDocument {
 }
 
 private struct AppStoreConfigurationExampleView: View {
-    @Environment(\.dismiss) private var dismiss
+    private enum Example: String, CaseIterable {
+        case gameWave = "GameWave 物料规则"
+        case appStore = "App Store Connect"
+        case guide = "飞书填表说明"
 
-    let content: String
-    let onDownload: () -> Void
+        var filename: String {
+            switch self {
+            case .gameWave: "\(AppStoreReleaseConfigurationFile.gameWaveDocumentID).json"
+            case .appStore: "app_store_connect.example.json"
+            case .guide: "feishu-import-guide.md"
+            }
+        }
+
+        func load() throws -> String {
+            switch self {
+            case .gameWave:
+                return try String(contentsOf: AppStoreReleaseConfigurationFile.gameWaveExampleURL(), encoding: .utf8)
+            case .appStore:
+                let configuration = try AppStoreReleaseConfigurationFile.exampleConfiguration()
+                return String(decoding: try AppStoreReleaseConfigurationFile.encodedData(configuration), as: UTF8.self)
+            case .guide:
+                guard let url = Bundle.main.url(forResource: "feishu-import-guide", withExtension: "md") else {
+                    throw CocoaError(.fileNoSuchFile)
+                }
+                return try String(contentsOf: url, encoding: .utf8)
+            }
+        }
+    }
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selection = Example.gameWave
+    @State private var content = ""
+    @State private var errorMessage: String?
+    let storageDirectory: URL
+    let onDownload: (String, String) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
                     Text("示例配置")
                         .font(.title2.bold())
-                    Text("下载后可编辑，再通过右上角“导入配置”覆盖本地值。")
+                    Spacer()
+                    Button("关闭") { dismiss() }
+                }
+                Picker("示例", selection: $selection) {
+                    ForEach(Example.allCases, id: \.self) { example in
+                        Text(example.rawValue).tag(example)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                if selection == .gameWave {
+                    Text("下方是内置示例。点「编辑本地规则」修改实际使用的 JSON，保存后下次导入即生效。")
+                        .foregroundStyle(.secondary)
+                } else if selection == .appStore {
+                    Text("下载后可编辑，再通过右上角「导入配置」加载。")
                         .foregroundStyle(.secondary)
                 }
-                Spacer()
-                Button("关闭") {
-                    dismiss()
-                }
-                Button("下载示例") {
-                    onDownload()
-                }
-                .buttonStyle(.borderedProminent)
             }
             .padding(20)
 
             Divider()
 
-            ScrollView([.horizontal, .vertical]) {
-                Text(content)
-                    .font(.system(.body, design: .monospaced))
+            ScrollView {
+                Text(verbatim: content)
+                    .font(.system(.body, design: selection == .guide ? .default : .monospaced))
                     .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(20)
+            }
+            if selection != .guide {
+                Divider()
+                HStack {
+                    Button("下载示例") { onDownload(content, selection.filename) }
+                        .disabled(content.isEmpty)
+                    Spacer()
+                    if selection == .gameWave {
+                        Button("编辑本地规则") {
+                            Task {
+                                do {
+                                    let url = try AppStoreReleaseConfigurationFile.editableGameWaveProfile(in: storageDirectory)
+                                    guard let editor = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.TextEdit") else {
+                                        throw CocoaError(.fileNoSuchFile)
+                                    }
+                                    try await NSWorkspace.shared.open([url], withApplicationAt: editor, configuration: .init())
+                                } catch {
+                                    errorMessage = "无法打开本地规则：\(error.localizedDescription)"
+                                }
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+                .padding(16)
             }
         }
         .frame(minWidth: 720, minHeight: 600)
+        .onChange(of: selection, initial: true) {
+            do {
+                content = try selection.load()
+            } catch {
+                content = ""
+                errorMessage = "无法读取示例：\(error.localizedDescription)"
+            }
+        }
+        .alert("操作失败", isPresented: Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )) {
+            Button("好") { errorMessage = nil }
+        } message: {
+            Text(errorMessage ?? "")
+        }
     }
 }
 
